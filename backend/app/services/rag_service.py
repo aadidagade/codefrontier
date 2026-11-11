@@ -328,13 +328,15 @@ Provide a clear, direct answer with citations.
             header = f"[CHUNK_ID: {chunk.id} | DOC: {doc.original_filename} | PAGE: {chunk.page_number or 1}]"
             corpus_parts.append(f"{header}\n{chunk.content}\n")
 
+        joined_corpus = "---\n".join(corpus_parts)
+
         prompt = f"""
 Analyze the following source document chunks from the same project repository.
 Identify any contradictory facts, mismatched configurations, conflicting ownerships, differing dates, or conflicting architecture decisions.
 
 SOURCE CORPUS:
 ----------------------------------------
-{"---\n".join(corpus_parts)}
+{joined_corpus}
 ----------------------------------------
 
 OUTPUT:
