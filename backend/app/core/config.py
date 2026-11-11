@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # Security & JWT Tokens
     JWT_SECRET_KEY: str = Field(
-        ...,
+        default="production-secret-key-change-in-production-min-32-chars",
         description="Cryptographically secure secret key for JWT signing",
     )
     JWT_ALGORITHM: str = "HS256"
@@ -46,12 +46,24 @@ class Settings(BaseSettings):
 
     # Google Gemini AI Configuration
     GEMINI_API_KEY: str = Field(
-        ...,
+        default="",
         description="Official Google Gemini API Key from Google AI Studio",
     )
     GEMINI_MODEL: str = "gemini-2.5-flash"
     GEMINI_EMBEDDING_MODEL: str = "text-embedding-004"
     EMBEDDING_DIMENSION: int = 768
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def assemble_db_connection(cls, v: Optional[str]) -> str:
+        if not v:
+            return "postgresql+asyncpg://postgres:postgres@localhost:5432/knowledge_handover"
+        # Convert Render's postgres:// or postgresql:// to postgresql+asyncpg://
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://") and not v.startswith("postgresql+asyncpg://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     # Frontend Integration & CORS
     FRONTEND_URL: str = "http://localhost:5173"
