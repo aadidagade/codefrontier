@@ -1,0 +1,19 @@
+DEPLOYMENT AND ENVIRONMENT SPECIFICATION
+
+Service Port Bindings:
+- Backend API: http://localhost:8000
+- Frontend Web: http://localhost:5173
+- PostgreSQL Database: localhost:5432
+- Database Name: codefrontier_db
+
+Environment Variables:
+- DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/codefrontier_db
+- JWT_SECRET_KEY=production-grade-super-secret-key-32-chars-minimum
+- GEMINI_MODEL=gemini-2.5-flash
+- GEMINI_EMBEDDING_MODEL=gemini-embedding-2
+- EMBEDDING_DIMENSION=768
+- MAX_UPLOAD_SIZE_MB=50
+
+Docker Container Configurations:
+The production service runs as an isolated non-root container with health checks polling /api/v1/health.
+All persistent document uploads are mounted to /app/storage/uploads with read-write permissions.
