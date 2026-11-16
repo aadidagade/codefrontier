@@ -2,7 +2,7 @@ import logging
 import uuid
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -12,13 +12,19 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.authorization import (
     require_document_access,
     require_project_membership,
+    require_permission,
+    enforce_member_permission,
 )
+from app.core.permissions import Permission
 from app.models.user import User
 from app.models.project import ProjectMember, ProjectMemberRole
 from app.models.document import Document, DocumentChunk
+from app.models.audit_log import AuditActionType, AuditEntityType
+from app.services.audit_service import AuditService
 from app.services.document_processing_service import DocumentProcessingService
 from app.repositories.document_repository import DocumentRepository
 from app.services.gemini_service import gemini_service
+from app.core.rate_limit import rate_limit
 from app.schemas.common import ApiResponse
 from app.schemas.document import (
     DocumentDetailResponse,
@@ -57,20 +63,21 @@ project_documents_router = APIRouter()
     response_model=ApiResponse[List[DocumentDetailResponse]],
     status_code=status.HTTP_201_CREATED,
     summary="Upload Documents to Project (Multi-File Support)",
-    description="Uploads one or more documents (PDF, DOCX, TXT, MD), validates MIME/magic bytes, enforces size limits, and triggers text extraction and intelligent chunking.",
+    description="Uploads one or more documents (PDF, DOCX, TXT, MD), validates MIME/magic bytes, enforces size limits, and triggers text extraction and intelligent chunking. Requires UPLOAD_DOCUMENTS permission.",
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))],
 )
 async def upload_documents(
     project_id: uuid.UUID,
+    request: Request,
     files: List[UploadFile] = File(..., description="One or more documents to upload"),
     background: bool = Query(False, description="Whether to execute extraction and indexing asynchronously in the background"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    member: ProjectMember = Depends(require_project_membership(
-        allowed_roles=[ProjectMemberRole.ADMIN, ProjectMemberRole.OUTGOING, ProjectMemberRole.LEAD]
-    )),
+    member: ProjectMember = Depends(require_permission(Permission.UPLOAD_DOCUMENTS)),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     service = DocumentProcessingService(db)
+    audit_svc = AuditService(db)
     processed_documents: List[DocumentDetailResponse] = []
 
     for file in files:
@@ -89,6 +96,25 @@ async def upload_documents(
             doc = await service.execute_processing_pipeline(doc.id)
 
         meta = doc.extraction_metadata or {}
+
+        # Record document uploaded audit event
+        await audit_svc.record_event(
+            action=AuditActionType.DOCUMENT_UPLOADED,
+            entity_type=AuditEntityType.DOCUMENT,
+            entity_id=doc.id,
+            user_id=current_user.id,
+            project_id=project_id,
+            change_metadata={
+                "original_filename": doc.original_filename,
+                "file_type": doc.file_type,
+                "file_size": doc.file_size,
+                "chunk_count": meta.get("chunk_count", 0),
+                "page_count": meta.get("page_count", 0),
+                "processing_status": doc.processing_status,
+            },
+            request=request,
+        )
+
         processed_documents.append(
             DocumentDetailResponse(
                 id=doc.id,
@@ -286,8 +312,17 @@ async def download_document(
     document: Document = Depends(require_document_access),
 ):
     file_path = Path(document.storage_path)
+    # Defense in depth: Verify file path is within authorized upload directory
+    try:
+        resolved_file = file_path.resolve()
+        resolved_base = settings.upload_path.resolve()
+        if not resolved_file.is_relative_to(resolved_base):
+            raise ForbiddenException("Access denied: Invalid file storage location.")
+    except (ValueError, RuntimeError):
+        raise ForbiddenException("Access denied: Invalid file path resolution.")
+
     if not file_path.exists():
-        return ApiResponse(data=None, success=False, message="Physical file not found on disk.")
+        raise NotFoundException("Document physical file", document.id)
 
     return FileResponse(
         path=str(file_path),
@@ -373,12 +408,21 @@ async def get_document_chunks(
     "/{document_id}",
     response_model=ApiResponse[bool],
     summary="Delete Document",
-    description="Deletes physical file from disk and cascaded records (Document, DocumentChunk, EvidenceReference) from PostgreSQL.",
+    description="Deletes physical file from disk and cascaded records (Document, DocumentChunk, EvidenceReference) from PostgreSQL. Requires DELETE_DOCUMENTS permission.",
 )
 async def delete_document(
     document: Document = Depends(require_document_access),
+    request: Request = None,
+    member: ProjectMember = Depends(require_permission(Permission.DELETE_DOCUMENTS)),
     db: AsyncSession = Depends(get_db),
 ):
+    doc_id = document.id
+    project_id = document.project_id
+    filename = document.original_filename
+    file_type = document.file_type
+    file_size = document.file_size
+    user_id = member.user_id if member else None
+
     # Remove physical file
     file_path = Path(document.storage_path)
     if file_path.exists():
@@ -389,6 +433,22 @@ async def delete_document(
 
     await db.delete(document)
     await db.commit()
+
+    # Record document deleted audit event
+    audit_svc = AuditService(db)
+    await audit_svc.record_event(
+        action=AuditActionType.DOCUMENT_DELETED,
+        entity_type=AuditEntityType.DOCUMENT,
+        entity_id=doc_id,
+        user_id=user_id,
+        project_id=project_id,
+        change_metadata={
+            "original_filename": filename,
+            "file_type": file_type,
+            "file_size": file_size,
+        },
+        request=request,
+    )
 
     return ApiResponse(
         data=True,

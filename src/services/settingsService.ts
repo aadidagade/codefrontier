@@ -39,8 +39,11 @@ export const defaultSettings: AppSettingsPayload = {
   workspace: {
     workspaceName: 'TechFrontier · Core Platform Engineering',
     workspaceSlug: 'techfrontier-core',
-    apiBaseUrl: 'http://localhost:8000/api/v1',
-    mockMode: true,
+    apiBaseUrl:
+      (import.meta.env.VITE_API_BASE_URL as string) ||
+      (import.meta.env.VITE_API_URL as string) ||
+      '/api/v1',
+    mockMode: false,
     aiModel: 'gemini-2.5-flash',
     documentRetentionDays: 90,
   },

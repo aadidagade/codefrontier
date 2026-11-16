@@ -7,6 +7,50 @@ import { Input } from '../../components/common/Input';
 import { useAuth } from '../../hooks/useAuth';
 import { useToast } from '../../hooks/useToast';
 
+interface DemoAccount {
+  role: string;
+  name: string;
+  email: string;
+  password: string;
+  badge: string;
+  badgeColor: string;
+}
+
+const DEMO_ACCOUNTS: DemoAccount[] = [
+  {
+    role: 'Lead Engineer',
+    name: 'Elena Rostova',
+    email: 'elena.rostova@techfrontier.io',
+    password: 'continuity2026',
+    badge: 'Lead / Admin',
+    badgeColor: 'bg-purple-500/10 text-purple-300 border-purple-500/30',
+  },
+  {
+    role: 'Outgoing Lead',
+    name: 'Sarah Chen',
+    email: 'sarah.chen@apex-pay.io',
+    password: 'Password123!',
+    badge: 'Author',
+    badgeColor: 'bg-blue-500/10 text-blue-300 border-blue-500/30',
+  },
+  {
+    role: 'Project Owner',
+    name: 'Marcus Vance',
+    email: 'marcus.vance@apex-pay.io',
+    password: 'Password123!',
+    badge: 'Reviewer',
+    badgeColor: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+  },
+  {
+    role: 'Incoming Member',
+    name: 'Alex Rivera',
+    email: 'alex.rivera@apex-pay.io',
+    password: 'Password123!',
+    badge: 'Continuity',
+    badgeColor: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+  },
+];
+
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
@@ -57,9 +101,9 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  const fillDemoAccount = () => {
-    setEmail('elena.rostova@techfrontier.io');
-    setPassword('continuity2026');
+  const handleFillAccount = (account: DemoAccount) => {
+    setEmail(account.email);
+    setPassword(account.password);
     setErrors({});
   };
 
@@ -72,9 +116,9 @@ export const LoginPage: React.FC = () => {
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35 }}
-        className="relative w-full max-w-md rounded-2xl bg-[#0F172A] border border-slate-800 shadow-2xl p-6 sm:p-8"
+        className="relative w-full max-w-lg rounded-2xl bg-[#0F172A] border border-slate-800 shadow-2xl p-6 sm:p-8"
       >
-        <div className="text-center mb-6">
+        <div className="text-center mb-5">
           <div className="inline-flex items-center justify-center h-11 w-11 rounded-xl bg-gradient-to-tr from-brand-600 to-purple-600 text-white shadow-glow mb-3">
             <Sparkles className="h-5 w-5" />
           </div>
@@ -84,19 +128,74 @@ export const LoginPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Demo Fast Fill Pill */}
-        <div className="mb-5 p-2.5 rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2 text-brand-300">
-            <ShieldCheck className="h-4 w-4 shrink-0 text-brand-400" />
-            <span>Try Lead Engineer demo account</span>
+        {/* Demo Accounts & Credentials Section */}
+        <div className="mb-5 rounded-xl bg-slate-900/90 border border-brand-500/30 overflow-hidden shadow-sm">
+          {/* Header & Primary Auto Fill */}
+          <div className="p-3 bg-brand-500/10 border-b border-brand-500/20 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-brand-400 shrink-0" />
+              <span className="text-xs font-semibold text-brand-200">Demo Accounts & Credentials</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleFillAccount(DEMO_ACCOUNTS[0])}
+              className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 bg-brand-500/20 hover:bg-brand-500/30 px-2.5 py-1 rounded transition-colors"
+            >
+              Auto Fill
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={fillDemoAccount}
-            className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 underline underline-offset-2"
-          >
-            Auto Fill
-          </button>
+
+          {/* Credentials Display List */}
+          <div className="p-2.5 space-y-2">
+            <div className="text-[11px] text-slate-400 px-1 flex items-center justify-between">
+              <span>Click any demo account to populate credentials:</span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-1.5 max-h-52 overflow-y-auto pr-0.5">
+              {DEMO_ACCOUNTS.map((acc) => (
+                <div
+                  key={acc.email}
+                  onClick={() => handleFillAccount(acc)}
+                  className={`p-2 rounded-lg border text-left cursor-pointer transition-all flex items-center justify-between ${
+                    email === acc.email
+                      ? 'bg-brand-500/15 border-brand-500/50 text-white'
+                      : 'bg-slate-800/60 hover:bg-slate-800 border-slate-700/60 text-slate-300'
+                  }`}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleFillAccount(acc);
+                    }
+                  }}
+                >
+                  <div className="min-w-0 flex-1 mr-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-white truncate">{acc.role}</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded border font-mono ${acc.badgeColor}`}>
+                        {acc.badge}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-slate-400 flex flex-wrap gap-x-2">
+                      <span>email: <strong className="text-slate-200 font-mono">{acc.email}</strong></span>
+                      <span>password: <strong className="text-brand-300 font-mono">{acc.password}</strong></span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleFillAccount(acc);
+                    }}
+                    className="text-[10px] shrink-0 font-medium px-2 py-0.5 rounded bg-slate-700/70 hover:bg-brand-600 text-slate-300 hover:text-white transition-colors"
+                  >
+                    Use
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         {errors.general && (
@@ -106,7 +205,7 @@ export const LoginPage: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
           <Input
             label="Work or University Email"
             type="email"

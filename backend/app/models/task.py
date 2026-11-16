@@ -68,6 +68,40 @@ class Task(Base, UUIDMixin, TimestampMixin):
         back_populates="depends_on_task",
         cascade="all, delete-orphan",
     )
+    progress_updates: Mapped[List["TaskProgressUpdate"]] = relationship(
+        "TaskProgressUpdate",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="desc(TaskProgressUpdate.created_at)",
+    )
+
+
+class TaskProgressUpdate(Base, UUIDMixin):
+    """
+    Timestamped progress update record added by incoming members or assignees on continuation tasks.
+    """
+    __tablename__ = "task_progress_updates"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    update_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status_before: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    status_after: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    # Relationships
+    task: Mapped["Task"] = relationship("Task", back_populates="progress_updates")
+    user: Mapped["User"] = relationship("User")
 
 
 class TaskDependency(Base, UUIDMixin):

@@ -42,9 +42,6 @@ export const PublicLayout: React.FC = () => {
             <a href="#workflow" className="hover:text-slate-100 transition-colors">
               Workflow
             </a>
-            <Link to="/design-system" className="hover:text-brand-300 transition-colors">
-              UI System
-            </Link>
           </nav>
 
           {/* Action CTAs */}

@@ -2,6 +2,9 @@ import re
 from pathlib import Path
 from app.services.extractor.base import ExtractedDocument, ExtractedSection
 
+# Pre-compiled markdown header regex for high-throughput line scanning
+_MD_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+
 
 def extract_text_and_markdown(file_path: Path, is_markdown: bool = False) -> ExtractedDocument:
     """
@@ -31,9 +34,9 @@ def extract_text_and_markdown(file_path: Path, is_markdown: bool = False) -> Ext
     for line in lines:
         stripped = line.strip()
 
-        # Markdown heading check
-        header_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-        if header_match and is_markdown:
+        # Markdown heading check with pre-compiled regex
+        header_match = _MD_HEADER_RE.match(stripped) if is_markdown else None
+        if header_match:
             hashes, title = header_match.groups()
             level = len(hashes)
 

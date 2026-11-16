@@ -27,11 +27,17 @@ class User(Base, UUIDMixin, TimestampMixin):
     profile_image: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    def __init__(self, **kwargs):
+        if "is_active" not in kwargs:
+            kwargs["is_active"] = True
+        super().__init__(**kwargs)
+
     # Relationships
     project_memberships: Mapped[List["ProjectMember"]] = relationship(
         "ProjectMember",
         back_populates="user",
         cascade="all, delete-orphan",
+        foreign_keys="ProjectMember.user_id",
     )
     projects_created: Mapped[List["Project"]] = relationship(
         "Project",
@@ -51,6 +57,11 @@ class User(Base, UUIDMixin, TimestampMixin):
         "Handover",
         back_populates="assignee",
         foreign_keys="Handover.assigned_to",
+    )
+    handovers_acknowledged: Mapped[List["Handover"]] = relationship(
+        "Handover",
+        back_populates="acknowledger",
+        foreign_keys="Handover.acknowledged_by",
     )
     tasks_assigned: Mapped[List["Task"]] = relationship(
         "Task",

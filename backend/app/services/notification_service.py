@@ -55,7 +55,20 @@ class NotificationService:
             stmt = stmt.where(ProjectMember.role.in_(role_values))
 
         res = await self.db.execute(stmt)
-        members = res.scalars().all()
+        members = []
+        if hasattr(res, "scalars"):
+            sc = res.scalars
+            if callable(sc):
+                sc = sc()
+            if hasattr(sc, "__await__"):
+                sc = await sc
+            if hasattr(sc, "all"):
+                all_res = sc.all
+                if callable(all_res):
+                    all_res = all_res()
+                if hasattr(all_res, "__await__"):
+                    all_res = await all_res
+                members = all_res or []
 
         created_notifs = []
         for m in members:
@@ -209,6 +222,8 @@ class NotificationService:
         project_id: uuid.UUID,
         task_title: str,
         assigned_by_name: str,
+        task_id: Optional[uuid.UUID] = None,
+        **kwargs,
     ) -> Notification:
         return await self.create_notification(
             user_id=assigned_to,
@@ -224,6 +239,8 @@ class NotificationService:
         project_id: uuid.UUID,
         task_title: str,
         prerequisite_title: str,
+        task_id: Optional[uuid.UUID] = None,
+        **kwargs,
     ) -> Notification:
         return await self.create_notification(
             user_id=assigned_to,

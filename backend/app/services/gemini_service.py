@@ -10,9 +10,14 @@ logger = logging.getLogger("app.services.gemini")
 
 def redact_secrets(text: str) -> str:
     """Removes API key strings from error messages or logs."""
-    if not text or not settings.GEMINI_API_KEY:
-        return text
-    return text.replace(settings.GEMINI_API_KEY, "[REDACTED_API_KEY]")
+    if not text:
+        return ""
+    cleaned = text
+    api_key = getattr(settings, "GEMINI_API_KEY", None)
+    if api_key:
+        cleaned = cleaned.replace(api_key, "[REDACTED_API_KEY]")
+    cleaned = re.sub(r'AIza[A-Za-z0-9_-]{30,40}', '[REDACTED_API_KEY]', cleaned)
+    return cleaned
 
 
 class GeminiService:
@@ -30,6 +35,9 @@ class GeminiService:
         self._client = None
         self._verified_gen_model: Optional[str] = None
         self._verified_embed_model: Optional[str] = None
+
+    def _scrub_secrets(self, text: str) -> str:
+        return redact_secrets(text)
 
     def get_client(self):
         """Initializes and caches the official Google GenAI Client."""
@@ -238,6 +246,30 @@ class GeminiService:
 
         return vector
 
+    def _embed_content_with_retry(self, texts: List[str]) -> List[List[float]]:
+        client = self.get_client()
+        model_name = self.get_supported_embedding_model()
+        def _call_batch():
+            return client.models.embed_content(
+                model=model_name,
+                contents=texts,
+            )
+        res = self._execute_with_retry(f"Batch Embedding ({len(texts)} chunks)", _call_batch)
+        if hasattr(res, "embeddings") and res.embeddings and len(res.embeddings) == len(texts):
+            vecs = []
+            for item in res.embeddings:
+                vec = list(item.values)
+                if len(vec) != settings.EMBEDDING_DIMENSION:
+                    raise AiServiceException(
+                        f"Batch vector dimension {len(vec)} does not match {settings.EMBEDDING_DIMENSION}."
+                    )
+                vecs.append(vec)
+            return vecs
+        out = []
+        for single_text in texts:
+            out.append(self.generate_embedding(single_text))
+        return out
+
     def generate_embeddings_batch(self, texts: List[str], batch_size: int = 20) -> List[List[float]]:
         """
         Generates embeddings in efficient batches for document chunks.
@@ -247,8 +279,6 @@ class GeminiService:
             return []
 
         clean_texts = [self._normalize_text(t) for t in texts]
-        client = self.get_client()
-        model_name = self.get_supported_embedding_model()
         all_embeddings: List[List[float]] = []
 
         # Process in batches
@@ -256,27 +286,8 @@ class GeminiService:
             batch = clean_texts[i : i + batch_size]
             # Replace empty strings with a placeholder to keep index alignment
             safe_batch = [t if t else "..." for t in batch]
-
-            def _call_batch():
-                return client.models.embed_content(
-                    model=model_name,
-                    contents=safe_batch,
-                )
-
-            res = self._execute_with_retry(f"Batch Embedding ({len(batch)} chunks)", _call_batch)
-
-            if hasattr(res, "embeddings") and res.embeddings and len(res.embeddings) == len(safe_batch):
-                for item in res.embeddings:
-                    vec = list(item.values)
-                    if len(vec) != settings.EMBEDDING_DIMENSION:
-                        raise AiServiceException(
-                            f"Batch vector dimension {len(vec)} does not match {settings.EMBEDDING_DIMENSION}."
-                        )
-                    all_embeddings.append(vec)
-            else:
-                # Fallback to serial call for this batch if SDK returns non-list or mismatched count
-                for single_text in safe_batch:
-                    all_embeddings.append(self.generate_embedding(single_text))
+            vecs = self._embed_content_with_retry(safe_batch)
+            all_embeddings.extend(vecs)
 
         return all_embeddings
 
@@ -289,24 +300,27 @@ class GeminiService:
         prompt: str,
         system_instruction: Optional[str] = None,
         temperature: float = 0.2,
+        response_mime_type: Optional[str] = None,
     ) -> str:
         """
         Generates text using the verified Gemini generation model.
+        Supports structured JSON output when response_mime_type="application/json".
         """
         client = self.get_client()
         model_name = self.get_supported_generation_model()
 
         def _call_gen():
             config = None
-            if system_instruction:
-                try:
-                    from google.genai import types
-                    config = types.GenerateContentConfig(
-                        temperature=temperature,
-                        system_instruction=system_instruction,
-                    )
-                except Exception:
-                    config = None
+            try:
+                from google.genai import types
+                kwargs = {"temperature": temperature}
+                if system_instruction:
+                    kwargs["system_instruction"] = system_instruction
+                if response_mime_type:
+                    kwargs["response_mime_type"] = response_mime_type
+                config = types.GenerateContentConfig(**kwargs)
+            except Exception:
+                config = None
 
             return client.models.generate_content(
                 model=model_name,
@@ -315,11 +329,28 @@ class GeminiService:
             )
 
         response = self._execute_with_retry("Content Generation", _call_gen)
-        if not response or not response.text:
+        if not response or not response.text or not response.text.strip():
             raise AiServiceException("Gemini returned an empty generation response.")
 
         return response.text.strip()
 
+    def generate_structured_json(
+        self,
+        prompt: str,
+        system_instruction: Optional[str] = None,
+        temperature: float = 0.0,
+    ) -> str:
+        """
+        Generates strictly structured JSON using Gemini API response_mime_type='application/json'.
+        """
+        return self.generate_content(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            response_mime_type="application/json",
+        )
+
 
 # Global Gemini service instance
+GeminiClientService = GeminiService
 gemini_service = GeminiService()

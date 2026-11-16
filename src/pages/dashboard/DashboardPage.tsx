@@ -33,6 +33,8 @@ import { Modal } from '../../components/common/Modal';
 import { Input } from '../../components/common/Input';
 import { useAuth } from '../../hooks/useAuth';
 import { useToast } from '../../hooks/useToast';
+import { useRole } from '../../context/RoleContext';
+import { IncomingMemberDashboardPage } from '../incoming/IncomingMemberDashboardPage';
 import {
   mockProjects,
   mockActivities,
@@ -47,7 +49,12 @@ import { ActivityEvent, PendingAction } from '../../types/dashboard';
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { currentRole } = useRole();
   const { success, warning, info: toastInfo } = useToast();
+
+  if (currentRole === 'incoming_member') {
+    return <IncomingMemberDashboardPage />;
+  }
 
   // Filter & Search states
   const [projectSearch, setProjectSearch] = useState('');
@@ -476,9 +483,9 @@ export const DashboardPage: React.FC = () => {
                   </div>
 
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] font-semibold text-brand-400">
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-[11px] font-semibold text-brand-400 shrink-0">
                           {act.projectKey}
                         </span>
                         <h4 className="text-xs font-semibold text-white group-hover:text-brand-300 transition-colors truncate">

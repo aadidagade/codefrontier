@@ -76,6 +76,15 @@ export const MyHandoversPage: React.FC = () => {
 
         <div className="flex items-center gap-2.5">
           <Button
+            variant="primary"
+            size="sm"
+            onClick={() => navigate('/incoming/dashboard')}
+            leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+            className="text-xs font-semibold"
+          >
+            Continuity Dashboard
+          </Button>
+          <Button
             variant="outline"
             size="sm"
             onClick={() => {

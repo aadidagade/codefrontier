@@ -36,7 +36,7 @@ class UserResponse(BaseModel):
     email: str
     profile_image: Optional[str] = None
     is_active: bool
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
 
 class AuthResponse(BaseModel):

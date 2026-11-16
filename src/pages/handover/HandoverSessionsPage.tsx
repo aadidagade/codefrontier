@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRightLeft, Sparkles, CheckCircle2, Clock, AlertTriangle, Plus, ChevronRight, FileText } from 'lucide-react';
+import { ArrowRightLeft, Sparkles, CheckCircle2, Clock, AlertTriangle, Plus, ChevronRight, FileText, GitBranch } from 'lucide-react';
 import { Button } from '../../components/common/Button';
 import { Badge } from '../../components/common/Badge';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../../components/common/Card';
@@ -137,6 +137,15 @@ export const HandoverSessionsPage: React.FC = () => {
                 Status: Handover verification active in staging environment
               </span>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/handovers/${h.id}/versions`)}
+                  leftIcon={<GitBranch className="h-3.5 w-3.5 text-brand-400" />}
+                  className="text-xs"
+                >
+                  Versions
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"

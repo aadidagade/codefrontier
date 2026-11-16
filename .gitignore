@@ -50,4 +50,9 @@ uploads/
 .DS_Store
 Thumbs.db
 
+# Test reports & output
+test-results/
+playwright-report/
+
+
 

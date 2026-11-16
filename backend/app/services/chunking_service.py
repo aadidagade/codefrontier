@@ -5,6 +5,10 @@ from app.models.document import DocumentChunk
 from app.services.extractor.base import ExtractedDocument, ExtractedSection
 
 
+# Pre-compiled regex for sentence boundary detection across paragraphs
+_SENTENCE_ENDINGS = re.compile(r'(?<=[.!?])\s+')
+
+
 class IntelligentChunkingService:
     """
     Semantic chunking engine designed for knowledge continuity:
@@ -19,10 +23,8 @@ class IntelligentChunkingService:
         self.chunk_overlap = chunk_overlap
 
     def _split_into_sentences(self, text: str) -> List[str]:
-        """Splits paragraph into sentences using regex boundary detection."""
-        # Splits on period, question mark, or exclamation mark followed by whitespace or end of line
-        sentence_endings = re.compile(r'(?<=[.!?])\s+')
-        sentences = sentence_endings.split(text.strip())
+        """Splits paragraph into sentences using pre-compiled regex boundary detection."""
+        sentences = _SENTENCE_ENDINGS.split(text.strip())
         return [s.strip() for s in sentences if s.strip()]
 
     def create_chunks(
@@ -123,6 +125,47 @@ class IntelligentChunkingService:
                 chunk_idx += 1
 
         return chunks
+
+    def chunk_document(
+        self,
+        document_id: uuid.UUID,
+        project_id: uuid.UUID,
+        full_text: str,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+    ) -> List[DocumentChunk]:
+        """
+        Direct text chunking interface supporting custom chunk sizes and overlap.
+        """
+        orig_size = self.target_chunk_size
+        orig_overlap = self.chunk_overlap
+        if chunk_size:
+            self.target_chunk_size = chunk_size
+        if chunk_overlap:
+            self.chunk_overlap = chunk_overlap
+        try:
+            sections: List[ExtractedSection] = []
+            heading_re = re.compile(r'^(#{1,6})\s+(.*)$', re.MULTILINE)
+            matches = list(heading_re.finditer(full_text))
+            if matches:
+                for i, match in enumerate(matches):
+                    title = match.group(2).strip()
+                    start = match.end()
+                    end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
+                    content = full_text[start:end].strip()
+                    sections.append(ExtractedSection(title=title, content=content, page_number=1))
+            else:
+                sections = [ExtractedSection(title="Main Content", content=full_text, page_number=1)]
+
+            extracted_doc = ExtractedDocument(
+                full_text=full_text,
+                page_count=1,
+                sections=sections,
+            )
+            return self.create_chunks(extracted_doc, document_id, project_id)
+        finally:
+            self.target_chunk_size = orig_size
+            self.chunk_overlap = orig_overlap
 
 
 # Singleton chunker instance with standard configuration

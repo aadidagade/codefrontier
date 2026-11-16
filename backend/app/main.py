@@ -27,11 +27,21 @@ async def lifespan(app: FastAPI):
     db_status = await check_database_health()
     if db_status.get("status") == "connected":
         logger.info(
-            f"PostgreSQL connection verified. Version: {db_status.get('version', '').split(',')[0]} "
+            f"Database connection verified. Version: {db_status.get('version', '').split(',')[0]} "
             f"| pgvector: {db_status.get('pgvector_enabled')}"
         )
     else:
         logger.warning(f"Initial database connection check: {db_status.get('error')}")
+
+    # Ensure SQLite local tables exist if running on file-backed SQLite fallback
+    if "sqlite" in settings.DATABASE_URL:
+        try:
+            async with engine.begin() as conn:
+                from app.models import Base
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("SQLite local schema verified and initialized.")
+        except Exception as exc:
+            logger.warning(f"SQLite auto-table creation warning: {exc}")
 
     # Yield control to the application
     yield
@@ -57,6 +67,7 @@ openapi_tags = [
     {"name": "Continuation Tasks", "description": "Incoming responsibilities, progress notes, and execution tracking."},
     {"name": "Notifications", "description": "In-app alerts, review requests, and transition deadlines."},
     {"name": "Exports", "description": "Formal handover packages exported to PDF, Markdown, and JSON."},
+    {"name": "Audit Trail", "description": "Immutable security and compliance activity logging and monitoring."},
 ]
 
 # FastAPI Application Factory

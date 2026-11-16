@@ -1,0 +1,66 @@
+# ==============================================================================
+# Production Docker Compose for Knowledge Handover Platform
+# PostgreSQL 16 (pgvector) + FastAPI Backend + React/Nginx Frontend
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: knowledge_handover_db
+    restart: always
+    environment:
+      POSTGRES_DB: knowledge_handover
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMeInProduction123!}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d knowledge_handover"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: knowledge_handover_backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_NAME: "Knowledge Handover Platform"
+      APP_ENV: "production"
+      DEBUG: "false"
+      DATABASE_URL: "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-ChangeMeInProduction123!}@db:5432/knowledge_handover"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-default-production-secret-must-be-set-via-env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: "gemini-2.5-flash"
+      GEMINI_EMBEDDING_MODEL: "text-embedding-004"
+      EMBEDDING_DIMENSION: 768
+      UPLOAD_DIR: "storage/uploads"
+      MAX_UPLOAD_SIZE_MB: 20
+    volumes:
+      - backend_uploads:/app/backend/storage/uploads
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: knowledge_handover_frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  backend_uploads:

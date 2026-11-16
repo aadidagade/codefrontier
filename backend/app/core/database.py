@@ -9,13 +9,20 @@ from sqlalchemy import text
 from app.core.config import settings
 
 # SQLAlchemy 2.0 Async Engine
+engine_kwargs = {
+    "echo": settings.DEBUG,
+    "future": True,
+}
+if "sqlite" not in settings.DATABASE_URL:
+    engine_kwargs.update({
+        "pool_pre_ping": settings.DB_POOL_PRE_PING,
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+    })
+
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
-    future=True,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    **engine_kwargs
 )
 
 # Async Session Factory
@@ -56,7 +63,18 @@ async def check_database_health() -> dict:
     """
     try:
         async with engine.connect() as conn:
-            # Basic connectivity
+            if engine.dialect.name == "sqlite":
+                result = await conn.execute(text("SELECT sqlite_version();"))
+                db_version = result.scalar()
+                return {
+                    "status": "connected",
+                    "database": "SQLite",
+                    "version": f"SQLite {db_version}",
+                    "pgvector_enabled": False,
+                    "pgvector_version": None,
+                }
+
+            # Basic connectivity for PostgreSQL
             result = await conn.execute(text("SELECT version();"))
             db_version = result.scalar()
 

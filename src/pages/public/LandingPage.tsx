@@ -649,7 +649,7 @@ export const LandingPage: React.FC = () => {
               <li><a href="#how-it-works" className="hover:text-white transition-colors">How It Works</a></li>
               <li><a href="#capabilities" className="hover:text-white transition-colors">Evidence AI</a></li>
               <li><a href="#problem" className="hover:text-white transition-colors">Conflict Detection</a></li>
-              <li><Link to="/design-system" className="hover:text-white transition-colors">Design System</Link></li>
+              <li><a href="#capabilities" className="hover:text-white transition-colors">Component Library</a></li>
             </ul>
           </div>
 

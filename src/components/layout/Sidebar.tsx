@@ -14,6 +14,9 @@ import {
   Sparkles,
   Layers,
   Database,
+  ShieldCheck,
+  GitCompare,
+  Clock,
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { UserMenu } from './UserMenu';
@@ -38,7 +41,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         { label: 'Knowledge Sources', path: '/knowledge-sources', icon: Database, badge: '14' },
         { label: 'Generate Handover', path: '/handover/generate', icon: Sparkles, badge: 'AI' },
         { label: 'Handover Drafts', path: '/handover', icon: ArrowRightLeft, badge: '2' },
+        { label: 'Evidence Verification', path: '/verification', icon: ShieldCheck, badge: 'Audit' },
+        { label: 'Knowledge Conflicts', path: '/conflicts', icon: GitCompare, badge: 'Detect' },
         { label: 'My Tasks', path: '/tasks', icon: ListTodo },
+        { label: 'Audit Trail', path: '/audit', icon: Clock },
         { label: 'Team Directory', path: '/team', icon: Users },
         { label: 'Settings', path: '/settings', icon: Settings },
       ];
@@ -48,8 +54,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       return [
         { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
         { label: 'My Handovers', path: '/my-handovers', icon: ArrowRightLeft, badge: '3' },
+        { label: 'Evidence Verification', path: '/verification', icon: ShieldCheck, badge: 'Verified' },
         { label: 'Continuation Tasks', path: '/tasks', icon: ListTodo, badge: '4' },
         { label: 'Approved Sources', path: '/knowledge-sources', icon: Database, badge: 'Verified' },
+        { label: 'Knowledge Conflicts', path: '/conflicts', icon: GitCompare },
         { label: 'Team Directory', path: '/team', icon: Users },
         { label: 'Settings', path: '/settings', icon: Settings },
       ];
@@ -62,7 +70,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       { label: 'Knowledge Sources', path: '/knowledge-sources', icon: Database, badge: '34' },
       { label: 'Handovers', path: '/handover', icon: ArrowRightLeft, badge: '4' },
       { label: 'Pending Reviews', path: '/review', icon: CheckSquare, badge: '3' },
+      { label: 'Evidence Verification', path: '/verification', icon: ShieldCheck, badge: 'Audit' },
+      { label: 'Knowledge Conflicts', path: '/conflicts', icon: GitCompare, badge: 'Detect' },
       { label: 'My Tasks', path: '/tasks', icon: ListTodo, badge: '4' },
+      { label: 'Audit Trail', path: '/audit', icon: Clock, badge: 'Live' },
       { label: 'Team Management', path: '/team', icon: Users, badge: 'Admin' },
       { label: 'Settings', path: '/settings', icon: Settings },
     ];

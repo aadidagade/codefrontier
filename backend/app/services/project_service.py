@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
 import uuid
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.project import Project, ProjectMember, ProjectMemberRole
+from app.models.user import User
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.project import (
@@ -11,10 +13,13 @@ from app.schemas.project import (
     MemberAdd,
     MemberUpdateRole,
     ProjectMemberResponse,
+    MemberRevokeResponse,
     ProjectOverviewResponse,
 )
+from app.core.permissions import ROLE_DISPLAY_NAMES, normalize_role
 from app.core.exceptions import (
     ConflictException,
+    ForbiddenException,
     NotFoundException,
     ValidationException,
 )
@@ -30,6 +35,27 @@ class ProjectService:
         self.db = db
         self.project_repo = ProjectRepository(db)
         self.user_repo = UserRepository(db)
+
+    def _format_member_response(self, pm: ProjectMember, user: User) -> ProjectMemberResponse:
+        """Helper to build standardized ProjectMemberResponse with role display name and status."""
+        canonical_role = normalize_role(pm.role)
+        display_name = ROLE_DISPLAY_NAMES.get(canonical_role, pm.role)
+        return ProjectMemberResponse(
+            id=pm.id,
+            project_id=pm.project_id,
+            user_id=user.id,
+            full_name=user.full_name,
+            email=user.email,
+            profile_image=user.profile_image,
+            role=pm.role,
+            role_display_name=display_name,
+            status=getattr(pm, "status", None) or "active",
+            invitation_status=getattr(pm, "invitation_status", None) or "accepted",
+            invited_by=getattr(pm, "invited_by", None),
+            invited_at=getattr(pm, "invited_at", None),
+            joined_at=pm.joined_at,
+            custom_permissions=getattr(pm, "custom_permissions", None),
+        )
 
     async def create_project(self, payload: ProjectCreate, creator_id: uuid.UUID) -> ProjectResponse:
         """Initializes a new project and enlists creator as ADMIN."""
@@ -111,25 +137,18 @@ class ProjectService:
     # Member Workflows
     # -------------------------------------------------------------------------
 
-    async def list_members(self, project_id: uuid.UUID) -> List[ProjectMemberResponse]:
+    async def list_members(self, project_id: uuid.UUID, status_filter: Optional[str] = None) -> List[ProjectMemberResponse]:
         """Lists all members assigned to a project."""
-        records = await self.project_repo.list_members_with_users(project_id)
-        return [
-            ProjectMemberResponse(
-                id=pm.id,
-                project_id=pm.project_id,
-                user_id=u.id,
-                full_name=u.full_name,
-                email=u.email,
-                profile_image=u.profile_image,
-                role=pm.role,
-                joined_at=pm.joined_at,
-            )
-            for pm, u in records
-        ]
+        records = await self.project_repo.list_members_with_users(project_id, status_filter=status_filter)
+        return [self._format_member_response(pm, u) for pm, u in records]
 
-    async def add_member(self, project_id: uuid.UUID, payload: MemberAdd) -> ProjectMemberResponse:
-        """Invites/adds an existing registered user to a project with designated role."""
+    async def add_member(
+        self,
+        project_id: uuid.UUID,
+        payload: MemberAdd,
+        inviter_id: Optional[uuid.UUID] = None,
+    ) -> ProjectMemberResponse:
+        """Invites/adds an existing registered user to a project with designated role and status."""
         target_user = None
         if payload.user_id:
             target_user = await self.user_repo.get_by_id(payload.user_id)
@@ -142,30 +161,46 @@ class ProjectService:
             identifier = str(payload.user_id) if payload.user_id else str(payload.email)
             raise NotFoundException("User", identifier)
 
+        now = datetime.now(timezone.utc)
+        initial_status = payload.status or "active"
+        invitation_status = "accepted" if initial_status == "active" else "pending"
+        role_str = payload.role.value if hasattr(payload.role, "value") else str(payload.role)
+
         # Check if already a member
         existing_member = await self.project_repo.get_member(project_id, target_user.id)
         if existing_member:
-            raise ConflictException(
-                message=f"User '{target_user.email}' is already an authorized member of this project.",
-                details={"user_id": str(target_user.id), "current_role": existing_member.role},
-            )
+            if existing_member.status == "revoked":
+                # Re-activate revoked member with newly designated role
+                updated = await self.project_repo.update_member_role(
+                    member_id=existing_member.id,
+                    new_role=role_str,
+                    custom_permissions=payload.custom_permissions,
+                    status=initial_status,
+                )
+                if inviter_id:
+                    updated.invited_by = inviter_id
+                    updated.invited_at = now
+                    await self.db.commit()
+                    await self.db.refresh(updated)
+                return self._format_member_response(updated, target_user)
+            else:
+                raise ConflictException(
+                    message=f"User '{target_user.email}' is already an authorized member of this project.",
+                    details={"user_id": str(target_user.id), "current_role": existing_member.role, "status": existing_member.status},
+                )
 
         new_member = await self.project_repo.add_member(
             project_id=project_id,
             user_id=target_user.id,
-            role=payload.role.value,
+            role=role_str,
+            custom_permissions=payload.custom_permissions,
+            status=initial_status,
+            invitation_status=invitation_status,
+            invited_by=inviter_id,
+            invited_at=now if inviter_id else None,
         )
 
-        return ProjectMemberResponse(
-            id=new_member.id,
-            project_id=new_member.project_id,
-            user_id=target_user.id,
-            full_name=target_user.full_name,
-            email=target_user.email,
-            profile_image=target_user.profile_image,
-            role=new_member.role,
-            joined_at=new_member.joined_at,
-        )
+        return self._format_member_response(new_member, target_user)
 
     async def update_member_role(
         self,
@@ -173,42 +208,93 @@ class ProjectService:
         member_id: uuid.UUID,
         payload: MemberUpdateRole,
     ) -> ProjectMemberResponse:
-        """Updates a member's role while guaranteeing at least one ADMIN remains."""
+        """Updates a member's role while guaranteeing at least one ADMIN/OWNER remains."""
         member = await self.project_repo.get_member_by_id(member_id)
         if not member or member.project_id != project_id:
             raise NotFoundException("ProjectMember", member_id)
 
-        # Check admin retention
-        if member.role == ProjectMemberRole.ADMIN.value and payload.role != ProjectMemberRole.ADMIN:
+        role_str = payload.role.value if hasattr(payload.role, "value") else str(payload.role)
+
+        # Check admin/owner retention
+        if member.role in (ProjectMemberRole.ADMIN.value, ProjectMemberRole.PROJECT_OWNER.value) and role_str not in (ProjectMemberRole.ADMIN.value, ProjectMemberRole.PROJECT_OWNER.value):
             admin_count = await self.project_repo.count_admins(project_id)
             if admin_count <= 1:
-                raise ConflictException("Cannot demote member: A project workspace must retain at least one active ADMIN.")
+                raise ConflictException("Cannot demote member: A project workspace must retain at least one active ADMIN or Project Owner.")
 
-        updated_member = await self.project_repo.update_member_role(member_id, payload.role.value)
+        updated_member = await self.project_repo.update_member_role(
+            member_id=member_id,
+            new_role=role_str,
+            custom_permissions=payload.custom_permissions,
+            status=payload.status,
+        )
         user = await self.user_repo.get_by_id(updated_member.user_id)
+        return self._format_member_response(updated_member, user)
 
-        return ProjectMemberResponse(
-            id=updated_member.id,
-            project_id=updated_member.project_id,
-            user_id=user.id,
-            full_name=user.full_name,
-            email=user.email,
-            profile_image=user.profile_image,
-            role=updated_member.role,
-            joined_at=updated_member.joined_at,
+    async def revoke_member_access(
+        self,
+        project_id: uuid.UUID,
+        member_id: uuid.UUID,
+    ) -> MemberRevokeResponse:
+        """Revokes a member's access to the project workspace, effective immediately."""
+        member = await self.project_repo.get_member_by_id(member_id)
+        if not member or member.project_id != project_id:
+            raise NotFoundException("ProjectMember", member_id)
+
+        # Check admin/owner retention
+        if member.role in (ProjectMemberRole.ADMIN.value, ProjectMemberRole.PROJECT_OWNER.value):
+            admin_count = await self.project_repo.count_admins(project_id)
+            if admin_count <= 1:
+                raise ConflictException("Cannot revoke access: A project workspace must retain at least one active ADMIN or Project Owner.")
+
+        now = datetime.now(timezone.utc)
+        revoked = await self.project_repo.update_member_status(
+            member_id=member_id,
+            status="revoked",
+            invitation_status="revoked",
+        )
+        return MemberRevokeResponse(
+            member_id=revoked.id,
+            project_id=revoked.project_id,
+            user_id=revoked.user_id,
+            status="revoked",
+            invitation_status="revoked",
+            revoked_at=now,
+            message="Project workspace access revoked successfully.",
         )
 
+    async def accept_invitation(
+        self,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> ProjectMemberResponse:
+        """Allows an invited registered user to accept project workspace membership."""
+        member = await self.project_repo.get_member(project_id, user_id)
+        if not member:
+            raise NotFoundException("ProjectMember invitation", str(user_id))
+
+        if member.status == "revoked":
+            raise ForbiddenException("Access denied: Your project membership has been revoked.")
+
+        now = datetime.now(timezone.utc)
+        updated = await self.project_repo.update_member_status(
+            member_id=member.id,
+            status="active",
+            invitation_status="accepted",
+        )
+        user = await self.user_repo.get_by_id(user_id)
+        return self._format_member_response(updated, user)
+
     async def remove_member(self, project_id: uuid.UUID, member_id: uuid.UUID) -> bool:
-        """Removes a member from the project while guaranteeing at least one ADMIN remains."""
+        """Removes a member from the project while guaranteeing at least one ADMIN/OWNER remains."""
         member = await self.project_repo.get_member_by_id(member_id)
         if not member or member.project_id != project_id:
             raise NotFoundException("ProjectMember", member_id)
 
         # Check admin retention
-        if member.role == ProjectMemberRole.ADMIN.value:
+        if member.role in (ProjectMemberRole.ADMIN.value, ProjectMemberRole.PROJECT_OWNER.value):
             admin_count = await self.project_repo.count_admins(project_id)
             if admin_count <= 1:
-                raise ConflictException("Cannot remove member: A project workspace must retain at least one active ADMIN.")
+                raise ConflictException("Cannot remove member: A project workspace must retain at least one active ADMIN or Project Owner.")
 
         return await self.project_repo.remove_member(member_id)
 

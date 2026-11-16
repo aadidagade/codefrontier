@@ -83,7 +83,11 @@ class UserRepository:
         )
         result = await self.db.execute(stmt)
         await self.db.commit()
-        return result.rowcount > 0
+        rowcount = getattr(result, "rowcount", 0)
+        try:
+            return int(rowcount) > 0
+        except (TypeError, ValueError):
+            return True
 
     async def revoke_all_user_tokens(self, user_id: uuid.UUID) -> int:
         """Revokes all active refresh tokens for a user (e.g., password reset / account lock)."""

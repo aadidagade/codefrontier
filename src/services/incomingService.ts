@@ -608,7 +608,7 @@ class IncomingService {
   async updateTaskStatus(
     packageId: string,
     taskId: string,
-    status: 'pending' | 'in_progress' | 'completed'
+    status: 'not_started' | 'pending' | 'in_progress' | 'blocked' | 'completed'
   ): Promise<IncomingHandoverPackage> {
     await new Promise((r) => setTimeout(r, 150));
     const items = this.getStore();

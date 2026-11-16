@@ -124,24 +124,29 @@ class ProjectRepository:
     async def list_members_with_users(
         self,
         project_id: uuid.UUID,
+        status_filter: Optional[str] = None,
     ) -> List[Tuple[ProjectMember, User]]:
         """Retrieves all project members joined with their User account information."""
         stmt = (
             select(ProjectMember, User)
             .join(User, User.id == ProjectMember.user_id)
             .where(ProjectMember.project_id == project_id)
-            .order_by(ProjectMember.joined_at.asc())
         )
+        if status_filter:
+            stmt = stmt.where(ProjectMember.status == status_filter)
+
+        stmt = stmt.order_by(ProjectMember.joined_at.asc())
         result = await self.db.execute(stmt)
         return list(result.all())
 
     async def count_admins(self, project_id: uuid.UUID) -> int:
-        """Counts how many ADMINs exist in the project."""
+        """Counts how many active ADMINs or PROJECT_OWNERs exist in the project."""
         stmt = (
             select(func.count(ProjectMember.id))
             .where(
                 ProjectMember.project_id == project_id,
-                ProjectMember.role == ProjectMemberRole.ADMIN.value,
+                ProjectMember.role.in_([ProjectMemberRole.ADMIN.value, ProjectMemberRole.PROJECT_OWNER.value]),
+                ProjectMember.status != "revoked",
             )
         )
         result = await self.db.execute(stmt)
@@ -152,12 +157,22 @@ class ProjectRepository:
         project_id: uuid.UUID,
         user_id: uuid.UUID,
         role: str,
+        custom_permissions: Optional[List[str]] = None,
+        status: str = "active",
+        invitation_status: str = "accepted",
+        invited_by: Optional[uuid.UUID] = None,
+        invited_at: Optional[datetime] = None,
     ) -> ProjectMember:
-        """Adds a user to a project with a specific role."""
+        """Adds or invites a user to a project with designated role and status."""
         member = ProjectMember(
             project_id=project_id,
             user_id=user_id,
             role=role,
+            custom_permissions=custom_permissions,
+            status=status,
+            invitation_status=invitation_status,
+            invited_by=invited_by,
+            invited_at=invited_at,
         )
         self.db.add(member)
         await self.db.commit()
@@ -168,12 +183,45 @@ class ProjectRepository:
         self,
         member_id: uuid.UUID,
         new_role: str,
+        custom_permissions: Optional[List[str]] = None,
+        status: Optional[str] = None,
     ) -> Optional[ProjectMember]:
-        """Updates a member's role."""
+        """Updates a member's role and custom permissions."""
+        values: dict = {"role": new_role}
+        if custom_permissions is not None:
+            values["custom_permissions"] = custom_permissions
+        if status is not None:
+            values["status"] = status
+            if status == "active":
+                values["invitation_status"] = "accepted"
+            elif status == "revoked":
+                values["invitation_status"] = "revoked"
+
         stmt = (
             update(ProjectMember)
             .where(ProjectMember.id == member_id)
-            .values(role=new_role)
+            .values(**values)
+            .returning(ProjectMember)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.scalars().first()
+
+    async def update_member_status(
+        self,
+        member_id: uuid.UUID,
+        status: str,
+        invitation_status: Optional[str] = None,
+    ) -> Optional[ProjectMember]:
+        """Updates a member's status and invitation status."""
+        values: dict = {"status": status}
+        if invitation_status is not None:
+            values["invitation_status"] = invitation_status
+
+        stmt = (
+            update(ProjectMember)
+            .where(ProjectMember.id == member_id)
+            .values(**values)
             .returning(ProjectMember)
         )
         result = await self.db.execute(stmt)

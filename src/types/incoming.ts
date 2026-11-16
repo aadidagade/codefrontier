@@ -13,7 +13,7 @@ export interface ContinuationTaskItem {
   id: string;
   title: string;
   description: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'not_started' | 'pending' | 'in_progress' | 'blocked' | 'completed';
   priority: 'critical' | 'high' | 'medium';
   assignedTo: User;
   dependencies: string[];

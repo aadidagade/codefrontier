@@ -1,11 +1,31 @@
 import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { Sidebar } from '../components/layout/Sidebar';
 import { TopNavbar } from '../components/layout/TopNavbar';
 import { ToastContainer } from '../components/common/Toast';
+import { useAuth } from '../hooks/useAuth';
 
 export const AppLayout: React.FC = () => {
+  const { isAuthenticated, isLoading, user } = useAuth();
+  const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // While checking stored session from localStorage / cookies
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#080C14] text-slate-400">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+          <span className="text-xs font-mono text-slate-400">Verifying session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Enforce authentication on all app workspace routes
+  if (!isAuthenticated || !user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
 
   return (
     <div className="flex h-screen bg-[#080C14] text-slate-100 overflow-hidden font-sans">

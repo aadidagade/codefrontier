@@ -93,7 +93,9 @@ async def verify_tables():
         "conflicts",
         "tasks",
         "task_dependencies",
+        "task_progress_updates",
         "notifications",
+        "audit_logs",
     ]
 
     conn = await asyncpg.connect(
@@ -139,7 +141,7 @@ async def verify_tables():
     await conn.close()
 
     print("\n" + "=" * 65)
-    print("  [SUCCESS] All 15 database models and pgvector extension are live!")
+    print(f"  [SUCCESS] All {len(expected_tables)} database models and pgvector extension are live!")
     print("=" * 65)
 
 

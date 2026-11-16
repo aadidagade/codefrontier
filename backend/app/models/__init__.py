@@ -9,10 +9,11 @@ from app.models.user import User, RefreshToken
 from app.models.project import Project, ProjectMember, ProjectMemberRole
 from app.models.document import Document, DocumentChunk
 from app.models.handover import Handover, HandoverSection, HandoverVersion, HandoverAuditLog
-from app.models.evidence import EvidenceReference
+from app.models.evidence import EvidenceReference, ClaimVerification
 from app.models.conflict import Conflict
-from app.models.task import Task, TaskDependency
+from app.models.task import Task, TaskDependency, TaskProgressUpdate
 from app.models.notification import Notification
+from app.models.audit_log import AuditLog, AuditActionType, AuditEntityType
 
 __all__ = [
     "Base",
@@ -33,14 +34,17 @@ __all__ = [
     "Handover",
     # 7. HandoverSection
     "HandoverSection",
-    # 8. EvidenceReference
+    # 8. EvidenceReference & ClaimVerification
     "EvidenceReference",
+    "ClaimVerification",
     # 9. Conflict
     "Conflict",
     # 10. Task
     "Task",
     # 11. TaskDependency
     "TaskDependency",
+    # 11b. TaskProgressUpdate
+    "TaskProgressUpdate",
     # 12. Notification
     "Notification",
     # 13. HandoverAuditLog
@@ -49,4 +53,8 @@ __all__ = [
     "HandoverVersion",
     # 15. RefreshToken
     "RefreshToken",
+    # 16. AuditLog
+    "AuditLog",
+    "AuditActionType",
+    "AuditEntityType",
 ]

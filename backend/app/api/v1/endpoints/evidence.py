@@ -13,12 +13,15 @@ from app.dependencies.authorization import (
 )
 from app.models.user import User
 from app.models.handover import Handover, HandoverSection
-from app.models.evidence import EvidenceReference
+from app.models.evidence import EvidenceReference, ClaimVerification
 from app.models.document import Document, DocumentChunk
 from app.schemas.common import ApiResponse
 from app.schemas.handover import (
     ClaimVerificationRequest,
     ClaimVerificationResult,
+    ClaimVerificationRecord,
+    SectionVerificationReport,
+    AdvancedHandoverVerificationReport,
     HandoverVerificationReport,
 )
 from app.services.verification_service import EvidenceVerificationService
@@ -35,8 +38,146 @@ class EvidenceCitation(BaseModel):
     pageOrSection: str
     excerpt: str = ""
     confidenceScore: int = 95
-    verificationStatus: str = "SUPPORTED"
+    verificationStatus: str = "Supported"
 
+
+# =============================================================================
+# 1. RETRIEVE ADVANCED VERIFICATION RESULTS
+# =============================================================================
+
+@router.get(
+    "/handovers/{handover_id}/verification-results",
+    response_model=ApiResponse[AdvancedHandoverVerificationReport],
+    summary="Get Verification Results for Handover",
+    description="Retrieves the section-by-section evidence verification report and all verified claims for a handover.",
+)
+async def get_handover_verification_results(
+    handover: Handover = Depends(require_handover_access),
+    db: AsyncSession = Depends(get_db),
+):
+    service = EvidenceVerificationService(db)
+    report = await service.get_handover_verification_results(handover.id)
+
+    return ApiResponse(
+        data=report,
+        message=f"Retrieved verification results: {report.supported_claims}/{report.total_claims} supported ({int(report.overall_support_rate * 100)}%).",
+    )
+
+
+@router.get(
+    "/sections/{section_id}/verification-results",
+    response_model=ApiResponse[SectionVerificationReport],
+    summary="Get Section Verification Results",
+    description="Retrieves verified claims and evidence attribution for an individual handover section.",
+)
+async def get_section_verification_results(
+    section_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(HandoverSection, Handover)
+        .join(Handover, HandoverSection.handover_id == Handover.id)
+        .where(HandoverSection.id == section_id)
+    )
+    result = await db.execute(stmt)
+    row = result.first()
+    if not row:
+        raise NotFoundException("HandoverSection", section_id)
+
+    section, handover = row
+    await require_project_membership()(project_id=handover.project_id, current_user=current_user, db=db)
+
+    service = EvidenceVerificationService(db)
+    report = await service.get_section_verification_results(section_id)
+
+    return ApiResponse(
+        data=report,
+        message=f"Retrieved {report.total_claims} claim verification(s) for section '{report.section_title}'.",
+    )
+
+
+@router.get(
+    "/claims/{claim_id}",
+    response_model=ApiResponse[ClaimVerificationRecord],
+    summary="Get Single Claim Verification Record",
+    description="Retrieves the full evidence verification record, supporting document, and text excerpt for a specific claim.",
+)
+async def get_claim_verification(
+    claim_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = EvidenceVerificationService(db)
+    record = await service.get_claim_verification(claim_id)
+    if not record:
+        raise NotFoundException("ClaimVerification", claim_id)
+
+    return ApiResponse(
+        data=record,
+        message=f"Claim verification record retrieved for {claim_id}.",
+    )
+
+
+# =============================================================================
+# 2. TRIGGER EVIDENCE VERIFICATION
+# =============================================================================
+
+@router.post(
+    "/handovers/{handover_id}/verify",
+    response_model=ApiResponse[AdvancedHandoverVerificationReport],
+    summary="Trigger Handover Evidence Verification Engine",
+    description="Analyses the generated handover section by section, retrieves relevant original document chunks, compares claims, classifies them, and saves results in PostgreSQL.",
+)
+async def trigger_handover_verification(
+    handover: Handover = Depends(require_handover_access),
+    db: AsyncSession = Depends(get_db),
+):
+    service = EvidenceVerificationService(db)
+    report = await service.verify_handover(handover.id)
+
+    return ApiResponse(
+        data=report,
+        message=f"Handover verification complete: {report.supported_claims}/{report.total_claims} supported ({int(report.overall_support_rate * 100)}%).",
+    )
+
+
+@router.post(
+    "/sections/{section_id}/verify",
+    response_model=ApiResponse[SectionVerificationReport],
+    summary="Trigger Section Verification",
+    description="Audits all claims in a specific handover section against retrieved source document chunks.",
+)
+async def trigger_section_verification(
+    section_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(HandoverSection, Handover)
+        .join(Handover, HandoverSection.handover_id == Handover.id)
+        .where(HandoverSection.id == section_id)
+    )
+    result = await db.execute(stmt)
+    row = result.first()
+    if not row:
+        raise NotFoundException("HandoverSection", section_id)
+
+    section, handover = row
+    await require_project_membership()(project_id=handover.project_id, current_user=current_user, db=db)
+
+    service = EvidenceVerificationService(db)
+    report = await service.verify_section(section_id, handover_id=handover.id)
+
+    return ApiResponse(
+        data=report,
+        message=f"Section '{report.section_title}' verified: {report.supported_claims}/{report.total_claims} claims supported.",
+    )
+
+
+# =============================================================================
+# 3. EXISTING EVIDENCE CITATIONS & PASSAGE RETRIEVAL
+# =============================================================================
 
 @router.get(
     "/{handover_id}",
@@ -50,7 +191,7 @@ async def list_handover_evidence(
 ):
     stmt = (
         select(EvidenceReference, Document.original_filename)
-        .join(Document, EvidenceReference.document_id == Document.id)
+        .outerjoin(Document, EvidenceReference.document_id == Document.id)
         .join(HandoverSection, EvidenceReference.handover_section_id == HandoverSection.id)
         .where(HandoverSection.handover_id == handover.id)
     )
@@ -61,11 +202,11 @@ async def list_handover_evidence(
     citations = [
         EvidenceCitation(
             id=str(ev.id),
-            claimText=ev.quoted_text,
-            sourceDocId=str(ev.document_id),
-            sourceDocName=doc_name,
-            pageOrSection=f"Page {ev.page_number}" if ev.page_number else "Section",
-            excerpt=ev.quoted_text,
+            claimText=ev.claim_text or ev.quoted_text,
+            sourceDocId=str(ev.document_id) if ev.document_id else "N/A",
+            sourceDocName=doc_name or ev.source_filename or "N/A",
+            pageOrSection=f"Page {ev.page_number}" if ev.page_number else (ev.section_reference or "Section"),
+            excerpt=ev.supporting_text_excerpt or ev.quoted_text,
             confidenceScore=int(ev.relevance_score * 100),
             verificationStatus=ev.verification_status,
         )

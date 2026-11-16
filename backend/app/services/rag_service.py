@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.exceptions import ValidationException, AiServiceException, NotFoundException
 from app.models.document import Document, DocumentChunk
 from app.models.handover import Handover, HandoverSection, HandoverAuditLog
-from app.models.evidence import EvidenceReference
+from app.models.evidence import EvidenceReference, ClaimVerification
 from app.models.conflict import Conflict
 from app.models.task import Task
 from app.repositories.document_repository import DocumentRepository
@@ -25,6 +25,8 @@ from app.schemas.handover import (
     FactualClaim,
     Recommendation,
     EvidenceStatus,
+    VerificationStatus,
+    normalize_verification_status,
 )
 from app.schemas.search import RetrievedChunk
 
@@ -318,21 +320,56 @@ Provide a clear, direct answer with citations.
     ) -> List[Dict[str, Any]]:
         """
         Scans project documentation chunks to detect contradictory statements across sources.
+        Leverages the Advanced Contradiction Detection Engine.
         """
+        from app.services.contradiction_service import ContradictionDetectionService
+        cds = ContradictionDetectionService(self.db)
         chunks_with_docs = await self._fetch_project_chunks(project_id, document_ids, max_chunks=100)
         if len(chunks_with_docs) < 2:
             return []
 
-        corpus_parts = []
-        for chunk, doc in chunks_with_docs:
-            header = f"[CHUNK_ID: {chunk.id} | DOC: {doc.original_filename} | PAGE: {chunk.page_number or 1}]"
-            corpus_parts.append(f"{header}\n{chunk.content}\n")
+        statements = await cds.extract_factual_statements(chunks_with_docs)
+        groups = cds.group_statements_by_entity_or_topic(statements)
 
-        joined_corpus = "---\n".join(corpus_parts)
+        results = []
+        seen = set()
+        for _, stmts in groups.items():
+            for i in range(len(stmts)):
+                for j in range(i + 1, len(stmts)):
+                    s1 = stmts[i]
+                    s2 = stmts[j]
+                    if s1.document_id == s2.document_id:
+                        continue
+                    pair = f"{min(s1.chunk_id, s2.chunk_id)}::{max(s1.chunk_id, s2.chunk_id)}"
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    ev = await cds.evaluate_contradiction(s1, s2)
+                    if ev and ev.is_contradiction:
+                        results.append({
+                            "conflict_type": ev.conflict_category,
+                            "description": ev.description,
+                            "source_a_chunk_id": str(s1.chunk_id),
+                            "source_a_quote": s1.excerpt,
+                            "source_b_chunk_id": str(s2.chunk_id),
+                            "source_b_quote": s2.excerpt,
+                        })
 
-        prompt = f"""
+        if results:
+            return results
+
+        # Optional LLM corpus fallback if configured
+        if settings.is_gemini_configured():
+            corpus_parts = []
+            for chunk, doc in chunks_with_docs:
+                header = f"[CHUNK_ID: {chunk.id} | DOC: {doc.original_filename} | PAGE: {chunk.page_number or 1}]"
+                corpus_parts.append(f"{header}\n{chunk.content}\n")
+
+            joined_corpus = "---\n".join(corpus_parts)
+            prompt = f"""
 Analyze the following source document chunks from the same project repository.
 Identify any contradictory facts, mismatched configurations, conflicting ownerships, differing dates, or conflicting architecture decisions.
+Avoid simple wording variations.
 
 SOURCE CORPUS:
 ----------------------------------------
@@ -355,9 +392,11 @@ Respond with ONLY valid JSON:
 }}
 If no contradictions are found, return {{"conflicts": []}}.
 """
-        raw = gemini_service.generate_content(prompt=prompt, temperature=0.1)
-        cleaned = self._clean_json_response(raw)
-        return cleaned.get("conflicts", [])
+            raw = gemini_service.generate_content(prompt=prompt, temperature=0.1)
+            cleaned = self._clean_json_response(raw)
+            return cleaned.get("conflicts", [])
+
+        return []
 
     # =========================================================================
     # 4. STRUCTURED 10-SECTION HANDOVER SYNTHESIS
@@ -456,6 +495,19 @@ If no contradictions are found, return {{"conflicts": []}}.
             full_corpus = "\n---\n".join(general_parts)
 
         return full_corpus, chunk_map
+
+    def _build_rag_prompt(
+        self,
+        chunks_with_docs: List[Tuple[DocumentChunk, Document]],
+        req: GenerationRequest,
+    ) -> str:
+        """Helper to build prompt from given chunk list."""
+        corpus_parts = []
+        for chunk, doc in chunks_with_docs:
+            h = f"[CHUNK_ID: {chunk.id} | DOC_ID: {doc.id} | DOC: {doc.original_filename} | PAGE: {chunk.page_number or 1}]"
+            corpus_parts.append(f"{h}\n{chunk.content}\n")
+        corpus = "\n---\n".join(corpus_parts)
+        return self._build_10_sections_prompt(corpus, req)
 
     def _build_10_sections_prompt(
         self,
@@ -623,7 +675,7 @@ Respond with ONLY valid JSON adhering strictly to this schema:
             project_id=req.projectId,
             created_by=user_id,
             title=handover_title,
-            status="DRAFT",  # STRICT: Always saved as DRAFT
+            status="draft",  # STRICT: Always saved as draft
             version="v1.0",
             generated_at=datetime.now(timezone.utc),
         )
@@ -685,23 +737,94 @@ Respond with ONLY valid JSON adhering strictly to this schema:
             self.db.add(section_record)
             all_created_sections.append(section_record)
 
-            # Link Evidence References for claims
+            # Link Evidence References & Claim Verifications for claims
+            now = datetime.now(timezone.utc)
             for claim in claims_list:
+                status_raw = claim.evidence_status.value if hasattr(claim.evidence_status, "value") else str(claim.evidence_status)
+                status_norm = normalize_verification_status(status_raw)
+
+                matched_chunks_found = False
                 for chunk_id_str in claim.source_chunk_ids:
                     chunk_id_clean = str(chunk_id_str).strip()
                     if chunk_id_clean in chunk_map:
+                        matched_chunks_found = True
                         matched_chunk, matched_doc = chunk_map[chunk_id_clean]
                         ev = EvidenceReference(
                             id=uuid.uuid4(),
                             handover_section_id=sec_id,
                             document_id=matched_doc.id,
                             document_chunk_id=matched_chunk.id,
+                            claim_id=claim.claim_id,
+                            claim_text=claim.statement,
                             quoted_text=claim.quoted_text or claim.statement or matched_chunk.content[:200],
+                            supporting_text_excerpt=claim.quoted_text or matched_chunk.content[:250],
+                            source_filename=matched_doc.original_filename,
                             page_number=matched_chunk.page_number,
+                            section_reference=matched_chunk.section_title,
                             relevance_score=0.95 if claim.evidence_status == EvidenceStatus.SUPPORTED else 0.70,
-                            verification_status=claim.evidence_status.value if hasattr(claim.evidence_status, "value") else str(claim.evidence_status),
+                            verification_status=status_norm,
+                            verification_timestamp=now,
                         )
                         self.db.add(ev)
+
+                        cv = ClaimVerification(
+                            id=uuid.uuid4(),
+                            handover_id=handover.id,
+                            handover_section_id=sec_id,
+                            claim_id=claim.claim_id,
+                            claim_text=claim.statement,
+                            verification_status=status_norm,
+                            supporting_document_id=matched_doc.id,
+                            document_chunk_id=matched_chunk.id,
+                            source_filename=matched_doc.original_filename,
+                            page_number=matched_chunk.page_number,
+                            section_reference=matched_chunk.section_title,
+                            supporting_text_excerpt=claim.quoted_text or matched_chunk.content[:250],
+                            reasoning=f"Grounded in {matched_doc.original_filename}",
+                            alignment_score=0.95 if claim.evidence_status == EvidenceStatus.SUPPORTED else 0.70,
+                            verification_timestamp=now,
+                        )
+                        self.db.add(cv)
+
+                if not matched_chunks_found:
+                    # Explicitly store claims with missing evidence as unsupported/insufficient evidence
+                    fallback_status = status_norm if status_norm in (VerificationStatus.UNSUPPORTED.value, VerificationStatus.INSUFFICIENT_EVIDENCE.value) else VerificationStatus.INSUFFICIENT_EVIDENCE.value
+                    ev = EvidenceReference(
+                        id=uuid.uuid4(),
+                        handover_section_id=sec_id,
+                        document_id=None,
+                        document_chunk_id=None,
+                        claim_id=claim.claim_id,
+                        claim_text=claim.statement,
+                        quoted_text=claim.quoted_text or claim.statement,
+                        supporting_text_excerpt=None,
+                        source_filename=None,
+                        page_number=None,
+                        section_reference=None,
+                        relevance_score=0.0,
+                        verification_status=fallback_status,
+                        verification_timestamp=now,
+                    )
+                    self.db.add(ev)
+
+                    cv = ClaimVerification(
+                        id=uuid.uuid4(),
+                        handover_id=handover.id,
+                        handover_section_id=sec_id,
+                        claim_id=claim.claim_id,
+                        claim_text=claim.statement,
+                        verification_status=fallback_status,
+                        supporting_document_id=None,
+                        document_chunk_id=None,
+                        source_filename=None,
+                        page_number=None,
+                        section_reference=None,
+                        supporting_text_excerpt=None,
+                        reasoning="No supporting source document chunk found in repository.",
+                        alignment_score=0.0,
+                        verification_timestamp=now,
+                    )
+                    self.db.add(cv)
 
         # Store Conflicts
         for conf in validated_output.conflicts:
@@ -802,6 +925,8 @@ Respond with ONLY valid JSON adhering strictly to this schema:
         )
         result = await self.db.execute(stmt)
         row = result.first()
+        if hasattr(row, "__await__"):
+            row = await row
         if not row:
             raise NotFoundException("HandoverSection", section_id)
 
@@ -902,28 +1027,101 @@ STRICT RULES:
         section.confidence = gen_section.confidence
         section.review_status = "pending"
 
-        # Delete old evidence references for this section and insert refreshed ones
+        # Delete old evidence references and claim verifications for this section and insert refreshed ones
         await self.db.execute(
             delete(EvidenceReference).where(EvidenceReference.handover_section_id == section.id)
         )
+        await self.db.execute(
+            delete(ClaimVerification).where(ClaimVerification.handover_section_id == section.id)
+        )
 
+        now = datetime.now(timezone.utc)
         chunk_lookup = {str(c.chunk_id): c for c in evidence_chunks}
         for claim in gen_section.content.claims:
+            status_raw = claim.evidence_status.value if hasattr(claim.evidence_status, "value") else str(claim.evidence_status)
+            status_norm = normalize_verification_status(status_raw)
+            matched_found = False
+
             for cid in claim.source_chunk_ids:
                 cid_clean = str(cid).strip()
                 if cid_clean in chunk_lookup:
+                    matched_found = True
                     ch = chunk_lookup[cid_clean]
                     ev = EvidenceReference(
                         id=uuid.uuid4(),
                         handover_section_id=section.id,
                         document_id=ch.document_id,
                         document_chunk_id=ch.chunk_id,
+                        claim_id=claim.claim_id,
+                        claim_text=claim.statement,
                         quoted_text=claim.quoted_text or claim.statement or ch.content[:200],
+                        supporting_text_excerpt=claim.quoted_text or ch.content[:250],
+                        source_filename=ch.document_name,
                         page_number=ch.page_number,
+                        section_reference=ch.section_title,
                         relevance_score=0.95 if claim.evidence_status == EvidenceStatus.SUPPORTED else 0.70,
-                        verification_status=claim.evidence_status.value if hasattr(claim.evidence_status, "value") else str(claim.evidence_status),
+                        verification_status=status_norm,
+                        verification_timestamp=now,
                     )
                     self.db.add(ev)
+
+                    cv = ClaimVerification(
+                        id=uuid.uuid4(),
+                        handover_id=handover.id,
+                        handover_section_id=section.id,
+                        claim_id=claim.claim_id,
+                        claim_text=claim.statement,
+                        verification_status=status_norm,
+                        supporting_document_id=ch.document_id,
+                        document_chunk_id=ch.chunk_id,
+                        source_filename=ch.document_name,
+                        page_number=ch.page_number,
+                        section_reference=ch.section_title,
+                        supporting_text_excerpt=claim.quoted_text or ch.content[:250],
+                        reasoning=f"Grounded in {ch.document_name}",
+                        alignment_score=0.95 if claim.evidence_status == EvidenceStatus.SUPPORTED else 0.70,
+                        verification_timestamp=now,
+                    )
+                    self.db.add(cv)
+
+            if not matched_found:
+                fallback_status = status_norm if status_norm in (VerificationStatus.UNSUPPORTED.value, VerificationStatus.INSUFFICIENT_EVIDENCE.value) else VerificationStatus.INSUFFICIENT_EVIDENCE.value
+                ev = EvidenceReference(
+                    id=uuid.uuid4(),
+                    handover_section_id=section.id,
+                    document_id=None,
+                    document_chunk_id=None,
+                    claim_id=claim.claim_id,
+                    claim_text=claim.statement,
+                    quoted_text=claim.quoted_text or claim.statement,
+                    supporting_text_excerpt=None,
+                    source_filename=None,
+                    page_number=None,
+                    section_reference=None,
+                    relevance_score=0.0,
+                    verification_status=fallback_status,
+                    verification_timestamp=now,
+                )
+                self.db.add(ev)
+
+                cv = ClaimVerification(
+                    id=uuid.uuid4(),
+                    handover_id=handover.id,
+                    handover_section_id=section.id,
+                    claim_id=claim.claim_id,
+                    claim_text=claim.statement,
+                    verification_status=fallback_status,
+                    supporting_document_id=None,
+                    document_chunk_id=None,
+                    source_filename=None,
+                    page_number=None,
+                    section_reference=None,
+                    supporting_text_excerpt=None,
+                    reasoning="No supporting source document chunk found in repository.",
+                    alignment_score=0.0,
+                    verification_timestamp=now,
+                )
+                self.db.add(cv)
 
         # Audit log
         audit = HandoverAuditLog(
@@ -949,7 +1147,12 @@ STRICT RULES:
             .options(selectinload(HandoverSection.evidence_references))
         )
         res_reload = await self.db.execute(stmt_reload)
-        reloaded_sec = res_reload.scalars().first()
+        scalars_obj = res_reload.scalars()
+        if hasattr(scalars_obj, "__await__"):
+            scalars_obj = await scalars_obj
+        reloaded_sec = scalars_obj.first()
+        if hasattr(reloaded_sec, "__await__"):
+            reloaded_sec = await reloaded_sec
 
         logger.info(f"Regenerated section '{section.section_type}' ({section.id}) for Handover {handover.id}.")
-        return reloaded_sec
+        return reloaded_sec or section

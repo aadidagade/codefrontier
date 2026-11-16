@@ -47,7 +47,7 @@ def validate_file_security(filename: str, header_bytes: bytes) -> Tuple[str, str
 
     if ext in DANGEROUS_EXTENSIONS:
         raise ValidationException(
-            message=f"Security violation: Executable and script files ({ext}) are strictly forbidden.",
+            message=f"Security violation: Unsupported Executable and script files ({ext}) are strictly forbidden.",
             details={"filename": filename, "extension": ext},
         )
 
@@ -61,14 +61,14 @@ def validate_file_security(filename: str, header_bytes: bytes) -> Tuple[str, str
     if ext == ".pdf":
         if not header_bytes.startswith(MAGIC_BYTES["pdf"]):
             raise ValidationException(
-                message="File content validation failed: Invalid PDF magic header bytes.",
+                message="File content validation failed: Invalid PDF magic bytes signature header.",
                 details={"filename": clean_name},
             )
         file_type = "pdf"
     elif ext == ".docx":
         if not header_bytes.startswith(MAGIC_BYTES["docx"]):
             raise ValidationException(
-                message="File content validation failed: Invalid DOCX (ZIP OpenXML) header bytes.",
+                message="File content validation failed: Invalid DOCX magic bytes signature header.",
                 details={"filename": clean_name},
             )
         file_type = "docx"

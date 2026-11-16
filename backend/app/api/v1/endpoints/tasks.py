@@ -12,7 +12,11 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.authorization import require_task_access, require_project_membership
 from app.models.user import User
 from app.models.project import ProjectMember, ProjectMemberRole
-from app.models.task import Task, TaskDependency
+from app.models.task import Task, TaskDependency, TaskProgressUpdate
+from app.models.handover import Handover
+from app.models.audit_log import AuditActionType, AuditEntityType
+from app.core.permissions import ProjectRole, normalize_role
+from app.services.audit_service import AuditService
 from app.schemas.common import ApiResponse
 from app.schemas.task import (
     TaskResponse,
@@ -22,6 +26,9 @@ from app.schemas.task import (
     TaskDependencyItem,
     TaskDependencyListResponse,
     ProgressNoteCreate,
+    TaskProgressUpdateCreate,
+    TaskProgressUpdateResponse,
+    TaskStatusUpdate,
 )
 from app.services.notification_service import NotificationService
 from app.core.exceptions import NotFoundException, ForbiddenException, BadRequestException
@@ -39,12 +46,33 @@ project_tasks_router = APIRouter()
 # HELPER FUNCTIONS: CYCLE DETECTION & BLOCKING STATUS
 # =============================================================================
 
-async def would_create_cycle(task_id: uuid.UUID, depends_on_task_id: uuid.UUID, db: AsyncSession) -> bool:
+async def would_create_cycle(*args, **kwargs) -> bool:
     """
     Checks if adding a directed dependency (task_id depends on depends_on_task_id)
     would create a cycle in the task graph.
-    Cycles occur if depends_on_task_id can already reach task_id transitively.
+    Supports signatures:
+    - (task_id, depends_on_task_id, db)
+    - (db, task_id, depends_on_task_id)
+    - keyword arguments: task_id, depends_on_task_id, db
     """
+    task_id = kwargs.get("task_id")
+    depends_on_task_id = kwargs.get("depends_on_task_id")
+    db = kwargs.get("db")
+
+    if args:
+        if hasattr(args[0], "execute"):
+            db = args[0]
+            if len(args) > 1:
+                task_id = args[1]
+            if len(args) > 2:
+                depends_on_task_id = args[2]
+        else:
+            task_id = args[0]
+            if len(args) > 1:
+                depends_on_task_id = args[1]
+            if len(args) > 2:
+                db = args[2]
+
     if task_id == depends_on_task_id:
         return True
 
@@ -61,10 +89,24 @@ async def would_create_cycle(task_id: uuid.UUID, depends_on_task_id: uuid.UUID, 
 
         stmt = select(TaskDependency.depends_on_task_id).where(TaskDependency.task_id == curr)
         res = await db.execute(stmt)
-        prereqs = res.scalars().all()
+        prereqs = []
+        if hasattr(res, "scalars"):
+            sc = res.scalars
+            if callable(sc):
+                sc = sc()
+            if hasattr(sc, "__await__"):
+                sc = await sc
+            if hasattr(sc, "all"):
+                all_res = sc.all
+                if callable(all_res):
+                    all_res = all_res()
+                if hasattr(all_res, "__await__"):
+                    all_res = await all_res
+                prereqs = all_res or []
         for p in prereqs:
-            if p not in visited:
-                queue.append(p)
+            target_id = p.depends_on_task_id if hasattr(p, "depends_on_task_id") else p
+            if target_id not in visited:
+                queue.append(target_id)
 
     return False
 
@@ -317,6 +359,33 @@ async def update_task(
 ):
     old_status = task.status
     old_assignee = task.assigned_to
+
+    # Check caller role permissions
+    m_stmt = select(ProjectMember).where(
+        ProjectMember.project_id == task.project_id,
+        ProjectMember.user_id == current_user.id,
+    )
+    m_res = await db.execute(m_stmt)
+    caller_member = m_res.scalars().first() if hasattr(m_res, "scalars") else None
+
+    if caller_member and normalize_role(caller_member.role) == ProjectRole.INCOMING:
+        is_assigned_to_user = (task.assigned_to == current_user.id)
+        if not is_assigned_to_user and task.handover_id:
+            h_res = await db.execute(select(Handover).where(Handover.id == task.handover_id))
+            h = h_res.scalars().first() if hasattr(h_res, "scalars") else None
+            if h and h.assigned_to == current_user.id:
+                is_assigned_to_user = True
+        elif not is_assigned_to_user and task.assigned_to is None:
+            is_assigned_to_user = True
+
+        if not is_assigned_to_user:
+            raise ForbiddenException("Incoming members can only update tasks assigned to them.")
+
+        if payload.assigned_to is not None and payload.assigned_to != current_user.id:
+            raise ForbiddenException("Incoming members cannot reassign tasks.")
+
+        if payload.title is not None or payload.priority is not None or payload.due_date is not None:
+            raise ForbiddenException("Incoming members can only update status and progress notes on assigned tasks.")
 
     if payload.title is not None:
         task.title = payload.title
@@ -620,4 +689,293 @@ async def add_task_progress_note(
     return ApiResponse(
         data={"taskId": str(task.id), "noteAdded": True},
         message="Progress note added to task.",
+    )
+
+
+@router.patch(
+    "/{task_id}/status",
+    response_model=ApiResponse[TaskResponse],
+    summary="Update Continuation Task Status",
+    description="Allows incoming members or task assignees to update the lifecycle status of a continuation task.",
+)
+async def update_continuation_task_status(
+    payload: TaskStatusUpdate,
+    task: Task = Depends(require_task_access),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Check permissions if incoming member
+    m_stmt = select(ProjectMember).where(
+        ProjectMember.project_id == task.project_id,
+        ProjectMember.user_id == current_user.id,
+    )
+    m_res = await db.execute(m_stmt)
+    caller_member = m_res.scalars().first() if hasattr(m_res, "scalars") else None
+
+    if caller_member and normalize_role(caller_member.role) == ProjectRole.INCOMING:
+        is_assigned_to_user = (task.assigned_to == current_user.id)
+        if not is_assigned_to_user and task.handover_id:
+            h_res = await db.execute(select(Handover).where(Handover.id == task.handover_id))
+            h = h_res.scalars().first() if hasattr(h_res, "scalars") else None
+            if h and h.assigned_to == current_user.id:
+                is_assigned_to_user = True
+        elif not is_assigned_to_user and task.assigned_to is None:
+            is_assigned_to_user = True
+
+        if not is_assigned_to_user:
+            raise ForbiddenException("Incoming members can only update tasks assigned to them.")
+
+    old_status = task.status
+    task.status = payload.status
+
+    # Record progress update if notes provided
+    if payload.notes:
+        note_entry = TaskProgressUpdate(
+            id=uuid.uuid4(),
+            task_id=task.id,
+            user_id=current_user.id,
+            update_text=payload.notes,
+            status_before=old_status,
+            status_after=task.status,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(note_entry)
+
+    # Handle completion unblocking
+    if payload.status == "completed" and old_status != "completed":
+        dep_stmt = (
+            select(Task)
+            .join(TaskDependency, TaskDependency.task_id == Task.id)
+            .where(TaskDependency.depends_on_task_id == task.id)
+        )
+        d_res = await db.execute(dep_stmt)
+        dependent_tasks = d_res.scalars().all() if hasattr(d_res, "scalars") else []
+
+        notif_svc = NotificationService(db)
+        for d_task in dependent_tasks:
+            if d_task.assigned_to:
+                _, _, still_blocked = await get_task_counts_and_blocked(d_task.id, db)
+                if not still_blocked:
+                    await notif_svc.notify_task_unblocked(
+                        assigned_to=d_task.assigned_to,
+                        project_id=d_task.project_id,
+                        task_id=d_task.id,
+                        task_title=d_task.title,
+                        prerequisite_title=task.title,
+                    )
+
+    # Auto advance handover transition status to 'In Progress' if currently 'Acknowledged'
+    if task.handover_id:
+        h_res = await db.execute(select(Handover).where(Handover.id == task.handover_id))
+        handover = h_res.scalars().first() if hasattr(h_res, "scalars") else None
+        if handover and hasattr(handover, "transition_status") and (handover.transition_status or "").upper() in ("ACKNOWLEDGED", "AWAITING_ACKNOWLEDGEMENT"):
+            handover.transition_status = "In Progress"
+
+    await db.commit()
+    await db.refresh(task)
+
+    # Audit logging
+    audit_svc = AuditService(db)
+    await audit_svc.log_event(
+        user_id=current_user.id,
+        project_id=task.project_id,
+        action_type=AuditActionType.TASK_STATUS_UPDATED,
+        entity_type=AuditEntityType.TASK,
+        entity_id=task.id,
+        details={
+            "task_title": task.title,
+            "old_status": old_status,
+            "new_status": task.status,
+            "notes": payload.notes,
+        },
+    )
+
+    deps_count, dependents_count, is_blocked = await get_task_counts_and_blocked(task.id, db)
+    assignee_name = None
+    if task.assigned_to:
+        u_res = await db.execute(select(User).where(User.id == task.assigned_to))
+        u = u_res.scalars().first() if hasattr(u_res, "scalars") else None
+        assignee_name = u.full_name if u else None
+
+    return ApiResponse(
+        data=TaskResponse(
+            id=task.id,
+            project_id=task.project_id,
+            handover_id=task.handover_id,
+            title=task.title,
+            description=task.description,
+            assigned_to=task.assigned_to,
+            assigned_to_name=assignee_name,
+            priority=task.priority,
+            status=task.status,
+            due_date=task.due_date,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            dependencies_count=deps_count,
+            dependents_count=dependents_count,
+            is_blocked=is_blocked,
+        ),
+        message=f"Task status transitioned from {old_status} to {task.status}.",
+    )
+
+
+@router.post(
+    "/{task_id}/progress",
+    response_model=ApiResponse[TaskProgressUpdateResponse],
+    status_code=status.HTTP_201_CREATED,
+    summary="Add Structured Progress Update to Task",
+    description="Records a timestamped progress update and optionally updates task status.",
+)
+async def add_task_progress_update(
+    payload: TaskProgressUpdateCreate,
+    task: Task = Depends(require_task_access),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Check permissions if incoming member
+    m_stmt = select(ProjectMember).where(
+        ProjectMember.project_id == task.project_id,
+        ProjectMember.user_id == current_user.id,
+    )
+    m_res = await db.execute(m_stmt)
+    caller_member = m_res.scalars().first() if hasattr(m_res, "scalars") else None
+
+    if caller_member and normalize_role(caller_member.role) == ProjectRole.INCOMING:
+        is_assigned_to_user = (task.assigned_to == current_user.id)
+        if not is_assigned_to_user and task.handover_id:
+            h_res = await db.execute(select(Handover).where(Handover.id == task.handover_id))
+            h = h_res.scalars().first() if hasattr(h_res, "scalars") else None
+            if h and h.assigned_to == current_user.id:
+                is_assigned_to_user = True
+        elif not is_assigned_to_user and task.assigned_to is None:
+            is_assigned_to_user = True
+
+        if not is_assigned_to_user:
+            raise ForbiddenException("Incoming members can only add progress updates to tasks assigned to them.")
+
+    old_status = task.status
+    if payload.new_status is not None:
+        task.status = payload.new_status
+        if payload.new_status == "completed" and old_status != "completed":
+            dep_stmt = (
+                select(Task)
+                .join(TaskDependency, TaskDependency.task_id == Task.id)
+                .where(TaskDependency.depends_on_task_id == task.id)
+            )
+            d_res = await db.execute(dep_stmt)
+            dependent_tasks = d_res.scalars().all() if hasattr(d_res, "scalars") else []
+            notif_svc = NotificationService(db)
+            for d_task in dependent_tasks:
+                if d_task.assigned_to:
+                    _, _, still_blocked = await get_task_counts_and_blocked(d_task.id, db)
+                    if not still_blocked:
+                        await notif_svc.notify_task_unblocked(
+                            assigned_to=d_task.assigned_to,
+                            project_id=d_task.project_id,
+                            task_id=d_task.id,
+                            task_title=d_task.title,
+                            prerequisite_title=task.title,
+                        )
+
+    # Append note to description for backward compatibility
+    now_utc = datetime.now(timezone.utc)
+    timestamp_str = now_utc.strftime("%Y-%m-%d %H:%M UTC")
+    author_str = current_user.full_name or current_user.email
+    task.description = (task.description or "") + f"\n\n---\n**Progress Note ({timestamp_str} by {author_str}):**\n{payload.update_text}"
+
+    # Auto advance handover transition status to 'In Progress' if currently 'Acknowledged'
+    if task.handover_id:
+        h_res = await db.execute(select(Handover).where(Handover.id == task.handover_id))
+        handover = h_res.scalars().first() if hasattr(h_res, "scalars") else None
+        if handover and hasattr(handover, "transition_status") and (handover.transition_status or "").upper() in ("ACKNOWLEDGED", "AWAITING_ACKNOWLEDGEMENT"):
+            handover.transition_status = "In Progress"
+
+    # Create progress record
+    progress_record = TaskProgressUpdate(
+        id=uuid.uuid4(),
+        task_id=task.id,
+        user_id=current_user.id,
+        update_text=payload.update_text,
+        status_before=old_status,
+        status_after=task.status,
+        created_at=now_utc,
+    )
+    db.add(progress_record)
+    await db.commit()
+    await db.refresh(progress_record)
+
+    # Audit logging
+    audit_svc = AuditService(db)
+    await audit_svc.log_event(
+        user_id=current_user.id,
+        project_id=task.project_id,
+        action_type=AuditActionType.TASK_PROGRESS_UPDATED,
+        entity_type=AuditEntityType.TASK,
+        entity_id=task.id,
+        details={
+            "task_title": task.title,
+            "status_before": old_status,
+            "status_after": task.status,
+            "update_text_length": len(payload.update_text),
+        },
+    )
+
+    return ApiResponse(
+        data=TaskProgressUpdateResponse(
+            id=progress_record.id,
+            task_id=progress_record.task_id,
+            user_id=progress_record.user_id,
+            user_name=current_user.full_name or current_user.email,
+            update_text=progress_record.update_text,
+            status_before=progress_record.status_before,
+            status_after=progress_record.status_after,
+            created_at=progress_record.created_at,
+        ),
+        message="Task progress update recorded successfully.",
+    )
+
+
+@router.get(
+    "/{task_id}/progress",
+    response_model=ApiResponse[List[TaskProgressUpdateResponse]],
+    summary="Get Task Progress Update History",
+    description="Retrieves all progress updates recorded on a continuation task.",
+)
+async def get_task_progress_updates(
+    task: Task = Depends(require_task_access),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(TaskProgressUpdate)
+        .where(TaskProgressUpdate.task_id == task.id)
+        .order_by(TaskProgressUpdate.created_at.desc())
+    )
+    res = await db.execute(stmt)
+    records = res.scalars().all() if hasattr(res, "scalars") else []
+
+    user_ids = {r.user_id for r in records if r.user_id}
+    user_map = {}
+    if user_ids:
+        u_res = await db.execute(select(User).where(User.id.in_(user_ids)))
+        users = u_res.scalars().all() if hasattr(u_res, "scalars") else []
+        user_map = {u.id: (u.full_name or u.email) for u in users}
+
+    updates = [
+        TaskProgressUpdateResponse(
+            id=r.id,
+            task_id=r.task_id,
+            user_id=r.user_id,
+            user_name=user_map.get(r.user_id, "Unknown"),
+            update_text=r.update_text,
+            status_before=r.status_before,
+            status_after=r.status_after,
+            created_at=r.created_at,
+        )
+        for r in records
+    ]
+
+    return ApiResponse(
+        data=updates,
+        message=f"Retrieved {len(updates)} progress updates.",
     )

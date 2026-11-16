@@ -15,7 +15,7 @@ class NotificationResponse(BaseModel):
     message: str
     notification_type: str
     is_read: bool
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
 
 class NotificationCreate(BaseModel):

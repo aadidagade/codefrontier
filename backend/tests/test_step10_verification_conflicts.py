@@ -17,6 +17,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime, timezone
 
+from app.core.config import Settings
 from app.services.verification_service import EvidenceVerificationService
 from app.models.document import Document, DocumentChunk
 from app.models.evidence import EvidenceReference
@@ -44,7 +45,7 @@ async def test_evidence_verification_supported_lexical():
 
     claim = "PostgreSQL 16 runs on port 5432 with pgvector extension."
 
-    with patch("app.core.config.settings.is_gemini_configured", return_value=False):
+    with patch.object(Settings, "is_gemini_configured", return_value=False):
         result = await service.verify_claim_against_chunks(claim_text=claim, chunks=[chunk])
         assert result.verification_status in (EvidenceStatus.SUPPORTED, EvidenceStatus.PARTIALLY_SUPPORTED)
         assert result.alignment_score >= 0.60
@@ -62,7 +63,7 @@ async def test_evidence_verification_unsupported():
 
     claim = "The backend microservice is deployed on Kubernetes using Helm charts with Istio service mesh."
 
-    with patch("app.core.config.settings.is_gemini_configured", return_value=False):
+    with patch.object(Settings, "is_gemini_configured", return_value=False):
         result = await service.verify_claim_against_chunks(claim_text=claim, chunks=[chunk])
         assert result.verification_status == EvidenceStatus.UNSUPPORTED
         assert result.alignment_score < 0.35
@@ -103,7 +104,7 @@ async def test_evidence_verification_gemini_nli_eval():
         "unsupported_facts": [],
     }
 
-    with patch("app.core.config.settings.is_gemini_configured", return_value=True), \
+    with patch.object(Settings, "is_gemini_configured", return_value=True), \
          patch("app.services.verification_service.gemini_service.generate_content", return_value=json.dumps(mock_nli_response)):
 
         res = await service.verify_claim_against_chunks(

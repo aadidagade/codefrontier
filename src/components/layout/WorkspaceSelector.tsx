@@ -62,7 +62,7 @@ export const WorkspaceSelector: React.FC = () => {
           <div className="h-5 w-5 rounded-md bg-brand-500/20 text-brand-400 flex items-center justify-center shrink-0">
             <Building2 className="h-3.5 w-3.5" />
           </div>
-          <span className="font-semibold text-xs truncate max-w-[140px] sm:max-w-[180px]">
+          <span className="font-semibold text-xs truncate max-w-[90px] xs:max-w-[130px] sm:max-w-[180px]">
             {currentWorkspace.name}
           </span>
           <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0 ml-0.5" />

@@ -1,0 +1,20 @@
+APEX OPERATIONAL RUNBOOK & SPRINT HANDOVER NOTES
+==================================================
+Project: Apex Multi-Currency Settlement Engine
+Classification: Confidential - Engineering Handover
+
+1. OPERATIONAL READINESS CHECKS
+- Health endpoint: https://internal.apex-pay.io/api/v1/health
+- Kafka cluster quorum verification: 3 active brokers, min.insync.replicas=2.
+- PostgreSQL replica lag monitoring: alert if replica lag > 150ms.
+
+2. PENDING TASKS ASSIGNED FOR CONTINUITY
+- TASK-001: Verify payment gateway ingress mutual TLS authentication and cipher suites.
+  Owner: Elena Rostova (Incoming Engineer) | Priority: High | Status: NOT_STARTED
+- TASK-002: Run database index health audit on settlement_transactions table partitions.
+  Owner: Elena Rostova (Incoming Engineer) | Priority: Medium | Status: NOT_STARTED
+
+3. CONFLICTING STATEMENT & SCHEDULE ALIGNMENT
+- Production Launch Target Deadline: December 1, 2026 (Partner banking gateway integration postponed by 45 days).
+- API Gateway Component Lead: Elena Rostova.
+- Database On-Call Primary Rotation Lead: [UNASSIGNED / TBD].

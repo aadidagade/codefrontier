@@ -28,7 +28,11 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../..
 import { Tabs } from '../../components/common/Tabs';
 import { Modal } from '../../components/common/Modal';
 import { projectService } from '../../services/projectService';
+import { memberService } from '../../services/memberService';
+import { auditService } from '../../services/auditService';
 import { Project } from '../../types/project';
+import { ProjectMember } from '../../types/member';
+import { AuditRecord } from '../../types/audit';
 import { mockDocuments, mockHandovers, mockConflicts, mockGaps, mockUsers, mockActivities } from '../../data/mockData';
 import { useToast } from '../../hooks/useToast';
 
@@ -38,6 +42,8 @@ export const ProjectWorkspacePage: React.FC = () => {
   const { success, warning, info } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
 
@@ -47,7 +53,7 @@ export const ProjectWorkspacePage: React.FC = () => {
   const [newDocType, setNewDocType] = useState('architecture_decision');
   const [newDocExcerpt, setNewDocExcerpt] = useState('');
 
-  // Fetch project from service
+  // Fetch project, members, and audit logs
   useEffect(() => {
     async function loadProject() {
       setIsLoading(true);
@@ -56,6 +62,27 @@ export const ProjectWorkspacePage: React.FC = () => {
       if (res.data) {
         setProject(res.data);
       }
+
+      // Fetch live members
+      try {
+        const memRes = await memberService.listMembers(id);
+        if (memRes.data) {
+          setProjectMembers(memRes.data);
+        }
+      } catch (err) {
+        console.warn('Could not load workspace members:', err);
+      }
+
+      // Fetch live audit logs
+      try {
+        const audRes = await auditService.getProjectAuditLogs(id, { page_size: 10 });
+        if (audRes.data) {
+          setAuditLogs(audRes.data.items || []);
+        }
+      } catch (err) {
+        console.warn('Could not load workspace audit logs:', err);
+      }
+
       setIsLoading(false);
     }
     loadProject();
@@ -104,11 +131,11 @@ export const ProjectWorkspacePage: React.FC = () => {
 
   const tabsList = [
     { id: 'overview', label: 'Overview', icon: <Layers className="h-3.5 w-3.5" /> },
-    { id: 'members', label: 'Members', count: project.membersCount, icon: <Users className="h-3.5 w-3.5" /> },
+    { id: 'members', label: 'Members', count: projectMembers.length || project.membersCount, icon: <Users className="h-3.5 w-3.5" /> },
     { id: 'documents', label: 'Documents & Runbooks', count: project.totalDocuments, icon: <FileText className="h-3.5 w-3.5" /> },
     { id: 'tasks', label: 'Tasks & Checklist', count: 4, icon: <CheckSquare className="h-3.5 w-3.5" /> },
     { id: 'handovers', label: 'Handovers', count: projectHandovers.length, icon: <ArrowRightLeft className="h-3.5 w-3.5" /> },
-    { id: 'activity', label: 'Activity Log', count: projectActivities.length, icon: <Clock className="h-3.5 w-3.5" /> },
+    { id: 'activity', label: 'Audit Trail', count: auditLogs.length || projectActivities.length, icon: <Clock className="h-3.5 w-3.5" /> },
   ];
 
   return (
@@ -429,52 +456,100 @@ export const ProjectWorkspacePage: React.FC = () => {
       {/* TAB 2: MEMBERS */}
       {activeTab === 'members' && (
         <Card className="bg-[#0F172A] border-slate-800 p-6 space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold text-white">Project Members & Access Governance</h3>
               <p className="text-xs text-slate-400 mt-0.5">
                 Engineers with active credentials, runbook read/write, and audit permissions
               </p>
             </div>
-            <Button
-              variant="primary"
-              size="sm"
-              leftIcon={<Plus className="h-4 w-4" />}
-              onClick={() => info('Invite Member', 'Member invitation dialog opened.')}
-            >
-              Add Member
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                leftIcon={<Users className="h-3.5 w-3.5" />}
+                onClick={() => navigate(`/projects/${id}/members`)}
+                className="text-xs"
+              >
+                Full RBAC Management
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                leftIcon={<Plus className="h-4 w-4" />}
+                onClick={() => navigate(`/projects/${id}/members`)}
+                className="text-xs"
+              >
+                Invite Member
+              </Button>
+            </div>
           </div>
 
           <div className="divide-y divide-slate-800">
-            {project.members.map((m) => (
-              <div key={m.id} className="py-3 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-3">
-                  <img
-                    src={m.avatarUrl}
-                    alt={m.name}
-                    className="h-8 w-8 rounded-full object-cover border border-slate-700"
-                  />
-                  <div>
-                    <div className="font-semibold text-white">{m.name}</div>
-                    <div className="text-[11px] text-slate-400">{m.email} · {m.department}</div>
+            {(projectMembers.length > 0 ? projectMembers : project.members).map((m: any) => {
+              const name = m.full_name || m.name;
+              const email = m.email;
+              const avatar = m.profile_image || m.avatarUrl;
+              const roleDisplay = m.role_display_name || m.role?.replace('_', ' ');
+              const status = m.status || 'active';
+              const customOverrides = m.custom_permissions?.length;
+
+              return (
+                <div key={m.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'}
+                      alt={name}
+                      className="h-8 w-8 rounded-full object-cover border border-slate-700"
+                    />
+                    <div>
+                      <div className="font-semibold text-white">{name}</div>
+                      <div className="text-[11px] text-slate-400">{email}</div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <Badge
+                      variant={
+                        m.role === 'ADMIN' || m.role === 'PROJECT_OWNER'
+                          ? 'accent'
+                          : m.role === 'OUTGOING'
+                          ? 'warning'
+                          : m.role === 'INCOMING'
+                          ? 'ai'
+                          : 'neutral'
+                      }
+                      size="sm"
+                    >
+                      {roleDisplay}
+                    </Badge>
+
+                    <Badge
+                      variant={status === 'active' ? 'success' : status === 'invited' ? 'warning' : 'danger'}
+                      size="sm"
+                      dot
+                    >
+                      {status === 'active' ? 'Active' : status === 'invited' ? 'Invited' : 'Revoked'}
+                    </Badge>
+
+                    {customOverrides ? (
+                      <span className="text-[10px] font-mono text-brand-400 bg-brand-500/10 px-2 py-0.5 rounded border border-brand-500/20">
+                        {customOverrides} Overrides
+                      </span>
+                    ) : null}
+
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => navigate(`/projects/${id}/members`)}
+                      className="text-xs text-slate-400 hover:text-white"
+                    >
+                      Manage
+                    </Button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  <Badge variant="neutral" size="sm">
-                    {m.role.replace('_', ' ')}
-                  </Badge>
-                  {project.owner?.id === m.id && (
-                    <Badge variant="accent" size="sm">Project Lead</Badge>
-                  )}
-                  {project.successor?.id === m.id && (
-                    <Badge variant="ai" size="sm">Successor</Badge>
-                  )}
-                  <span className="text-[11px] text-slate-500 font-mono">Active {m.lastActive}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       )}
@@ -648,28 +723,68 @@ export const ProjectWorkspacePage: React.FC = () => {
       {/* TAB 6: ACTIVITY */}
       {activeTab === 'activity' && (
         <Card className="bg-[#0F172A] border-slate-800 p-6 space-y-4">
-          <div>
-            <h3 className="text-sm font-semibold text-white">Workspace Audit Trail</h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Verified historical changes, runbook updates, and sign-offs for this repository
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Workspace Audit Trail</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Verified historical changes, runbook updates, and sign-offs for this repository
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Clock className="h-3.5 w-3.5 text-brand-400" />}
+              onClick={() => navigate(`/projects/${id}/audit`)}
+              className="text-xs"
+            >
+              Open Full Audit Dashboard
+            </Button>
           </div>
 
           <div className="divide-y divide-slate-800">
-            {projectActivities.map((act) => (
-              <div key={act.id} className="py-3 flex items-start gap-3 text-xs">
-                <div className="h-7 w-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-brand-400 shrink-0 mt-0.5">
-                  <Clock className="h-3.5 w-3.5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-white">{act.title}</span>
-                    <span className="text-[11px] text-slate-500 font-mono">{act.timeAgo}</span>
+            {auditLogs.length > 0 ? (
+              auditLogs.map((log) => (
+                <div key={log.id} className="py-3 flex items-start gap-3 text-xs">
+                  <div className="h-7 w-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-brand-400 shrink-0 mt-0.5">
+                    <Clock className="h-3.5 w-3.5" />
                   </div>
-                  <p className="text-slate-400 text-[11px] mt-0.5">{act.description}</p>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white">
+                          {log.action.replace(/_/g, ' ').toUpperCase()}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-mono">
+                          by {log.user_name || log.user_email || 'System'}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-500 font-mono">
+                        {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <p className="text-slate-400 text-[11px] mt-0.5 font-mono">
+                      Target: {log.entity_type} {log.entity_id ? `(${log.entity_id})` : ''} · Details:{' '}
+                      {JSON.stringify(log.change_metadata)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              projectActivities.map((act) => (
+                <div key={act.id} className="py-3 flex items-start gap-3 text-xs">
+                  <div className="h-7 w-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-brand-400 shrink-0 mt-0.5">
+                    <Clock className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-white">{act.title}</span>
+                      <span className="text-[11px] text-slate-500 font-mono">{act.timeAgo}</span>
+                    </div>
+                    <p className="text-slate-400 text-[11px] mt-0.5">{act.description}</p>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </Card>
       )}

@@ -15,9 +15,9 @@ const DEFAULT_CONFIG: ApiClientConfig = {
   baseUrl:
     (import.meta.env.VITE_API_BASE_URL as string) ||
     (import.meta.env.VITE_API_URL as string) ||
-    'http://localhost:8000/api/v1',
-  useMock: true,
-  mockLatencyMs: 300,
+    '/api/v1',
+  useMock: false,
+  mockLatencyMs: 0,
 };
 
 class ApiClient {
@@ -34,7 +34,7 @@ class ApiClient {
   }
 
   private getAuthHeaders(): HeadersInit {
-    const token = localStorage.getItem('kh_auth_token');
+    const token = localStorage.getItem('kh_auth_token') || localStorage.getItem('token');
     return {
       'Content-Type': 'application/json',
       Accept: 'application/json',
@@ -62,28 +62,86 @@ class ApiClient {
   }
 
   async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    if (this.config.useMock) {
-      throw new Error(`Real request called while useMock is enabled for ${endpoint}`);
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    // If endpoint already starts with /api/v1, don't duplicate
+    const url = endpoint.startsWith('http')
+      ? endpoint
+      : endpoint.startsWith('/api/')
+      ? endpoint
+      : `${this.config.baseUrl}${cleanEndpoint}`;
+
+    const headers = {
+      ...this.getAuthHeaders(),
+      ...options.headers,
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (err: unknown) {
+      const netError = err instanceof Error ? err.message : 'Network request failed';
+      throw new Error(`Failed to connect to backend service: ${netError}`);
     }
 
-    const url = `${this.config.baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        ...this.getAuthHeaders(),
-        ...options.headers,
-      },
-    });
+    let json: any = {};
+    const text = await response.text();
+    if (text) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = { message: text };
+      }
+    }
 
-    const json = await response.json();
     if (!response.ok) {
-      throw new Error(json.message || `Request failed with status ${response.status}`);
+      const errorMsg =
+        json.detail ||
+        json.message ||
+        json.error ||
+        `Request failed with status ${response.status}: ${response.statusText}`;
+      throw new Error(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
     }
 
     return {
-      data: json.data || json,
+      data: (json && json.data !== undefined ? json.data : json) as T,
       status: response.status,
+      message: json?.message,
     };
+  }
+
+  async get<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, { ...options, method: 'GET' });
+  }
+
+  async post<T>(endpoint: string, body?: any, options: RequestInit = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, {
+      ...options,
+      method: 'POST',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  async patch<T>(endpoint: string, body?: any, options: RequestInit = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, {
+      ...options,
+      method: 'PATCH',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  async put<T>(endpoint: string, body?: any, options: RequestInit = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, {
+      ...options,
+      method: 'PUT',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  async delete<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, { ...options, method: 'DELETE' });
   }
 }
 

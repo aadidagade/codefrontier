@@ -31,13 +31,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onToggleSidebar }) => {
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-slate-800 bg-[#080C14]/90 backdrop-blur-md px-3 sm:px-6">
+      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-slate-800 bg-[#080C14]/90 backdrop-blur-md px-2.5 sm:px-6">
         {/* Left: Hamburger + Workspace Selector + Breadcrumbs */}
-        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+        <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
           {onToggleSidebar && (
             <button
               onClick={onToggleSidebar}
-              className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
               aria-label="Toggle Navigation"
             >
               <Menu className="h-5 w-5" />
@@ -66,7 +66,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onToggleSidebar }) => {
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <span
             className="hidden 2xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono text-slate-400 bg-slate-900/80 border border-slate-800 select-none"
             title="All architecture artifacts, conflict pairs, and evidence traces are realistic synthetic demonstrations for prototype evaluation."

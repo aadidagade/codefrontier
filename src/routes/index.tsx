@@ -13,14 +13,19 @@ import { ForgotPasswordPage } from '../pages/public/ForgotPasswordPage';
 import { DashboardPage } from '../pages/dashboard/DashboardPage';
 import { ProjectsPage } from '../pages/projects/ProjectsPage';
 import { ProjectWorkspacePage } from '../pages/projects/ProjectWorkspacePage';
+import { ProjectMembersPage } from '../pages/projects/ProjectMembersPage';
+import { AuditLogsPage } from '../pages/audit/AuditLogsPage';
 import { HandoverSessionsPage } from '../pages/handover/HandoverSessionsPage';
 import { GenerateHandoverPage } from '../pages/handover/GenerateHandoverPage';
+import { HandoverVersionsPage } from '../pages/handover/HandoverVersionsPage';
 import { DocumentsPage } from '../pages/documents/DocumentsPage';
 import { ReviewQueuePage } from '../pages/review/ReviewQueuePage';
 import { HandoverReviewWorkspacePage } from '../pages/review/HandoverReviewWorkspacePage';
 import { ConflictsPage } from '../pages/review/ConflictsPage';
+import { EvidenceVerificationPage } from '../pages/verification/EvidenceVerificationPage';
 import { MyHandoversPage } from '../pages/incoming/MyHandoversPage';
 import { IncomingHandoverOverviewPage } from '../pages/incoming/IncomingHandoverOverviewPage';
+import { IncomingMemberDashboardPage } from '../pages/incoming/IncomingMemberDashboardPage';
 import { MyTasksPage } from '../pages/tasks/MyTasksPage';
 import { TeamMembersPage } from '../pages/team/TeamMembersPage';
 import { SettingsPage } from '../pages/settings/SettingsPage';
@@ -69,6 +74,22 @@ export const router = createBrowserRouter([
         element: <ProjectWorkspacePage />,
       },
       {
+        path: 'projects/:id/members',
+        element: <ProjectMembersPage />,
+      },
+      {
+        path: 'projects/:id/audit',
+        element: <AuditLogsPage />,
+      },
+      {
+        path: 'audit',
+        element: <AuditLogsPage />,
+      },
+      {
+        path: 'audit-logs',
+        element: <AuditLogsPage />,
+      },
+      {
         path: 'knowledge-sources',
         element: <DocumentsPage />,
       },
@@ -109,6 +130,18 @@ export const router = createBrowserRouter([
         element: <HandoverReviewWorkspacePage />,
       },
       {
+        path: 'incoming',
+        element: <IncomingMemberDashboardPage />,
+      },
+      {
+        path: 'incoming/dashboard',
+        element: <IncomingMemberDashboardPage />,
+      },
+      {
+        path: 'incoming-dashboard',
+        element: <IncomingMemberDashboardPage />,
+      },
+      {
         path: 'my-handovers',
         element: <MyHandoversPage />,
       },
@@ -121,8 +154,24 @@ export const router = createBrowserRouter([
         element: <IncomingHandoverOverviewPage />,
       },
       {
+        path: 'handovers/:id/versions',
+        element: <HandoverVersionsPage />,
+      },
+      {
+        path: 'review/:id/versions',
+        element: <HandoverVersionsPage />,
+      },
+      {
+        path: 'handover/:id/versions',
+        element: <HandoverVersionsPage />,
+      },
+      {
         path: 'conflicts',
         element: <ConflictsPage />,
+      },
+      {
+        path: 'verification',
+        element: <EvidenceVerificationPage />,
       },
       {
         path: 'tasks',

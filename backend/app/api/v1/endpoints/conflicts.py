@@ -1,25 +1,35 @@
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
-from fastapi import APIRouter, Depends, status
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user
+from app.dependencies import authorization
 from app.dependencies.authorization import require_project_membership
 from app.models.user import User
 from app.models.project import ProjectMemberRole
 from app.models.conflict import Conflict
+from app.models.audit_log import AuditActionType, AuditEntityType
+from app.services.audit_service import AuditService
 from app.schemas.common import ApiResponse
-from app.schemas.handover import (
+from app.schemas.conflict import (
+    ConflictCategory,
+    ConflictResolutionStatus,
     ConflictResponse,
     ConflictResolveRequest,
     ConflictUpdateRequest,
+    ContradictionDetectionReport,
+    normalize_conflict_status,
 )
+from app.services.contradiction_service import ContradictionDetectionService
 from app.services.rag_service import RAGService
-from app.core.exceptions import NotFoundException, ValidationException
+from app.core.exceptions import NotFoundException, ValidationException, ForbiddenException
+from app.core.permissions import Permission, ProjectRole, normalize_role, has_permission
 
 # Router for /conflicts/...
 router = APIRouter()
@@ -51,28 +61,28 @@ async def list_project_conflicts(
     if handoverId:
         stmt = stmt.where(Conflict.handover_id == handoverId)
     if status_filter:
-        stmt = stmt.where(Conflict.status == status_filter.upper())
+        norm = normalize_conflict_status(status_filter)
+        stmt = stmt.where(
+            or_(
+                Conflict.status == norm,
+                Conflict.status == status_filter.upper(),
+                Conflict.status == status_filter,
+            )
+        )
 
     stmt = stmt.order_by(Conflict.created_at.desc())
     result = await db.execute(stmt)
-    records = result.scalars().all()
+    if hasattr(result, "scalars"):
+        sc = result.scalars()
+        if hasattr(sc, "__await__"):
+            sc = await sc
+        records = sc.all() if hasattr(sc, "all") else []
+        if hasattr(records, "__await__"):
+            records = await records
+    else:
+        records = []
 
-    items = [
-        ConflictResponse(
-            id=c.id,
-            project_id=c.project_id,
-            handover_id=c.handover_id,
-            conflict_type=c.conflict_type,
-            description=c.description,
-            source_a=c.source_a,
-            source_b=c.source_b,
-            status=c.status,
-            resolution=c.resolution,
-            resolved_by=c.resolved_by,
-            created_at=c.created_at,
-        )
-        for c in records
-    ]
+    items = [ConflictResponse.model_validate(c) for c in records]
 
     return ApiResponse(
         data=items,
@@ -84,60 +94,76 @@ async def list_project_conflicts(
     "/{project_id}/conflicts/detect",
     response_model=ApiResponse[List[ConflictResponse]],
     summary="Run On-Demand Conflict Detection Across Project Documents",
-    description="Scans all uploaded project documents to identify conflicting deadlines, owners, configurations, or architecture choices.",
+    description="Scans all uploaded project documents to identify conflicting deadlines, tech stacks, task statuses, or team responsibilities.",
 )
 async def trigger_conflict_detection(
     project_id: uuid.UUID,
+    handoverId: Optional[uuid.UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await require_project_membership(
-        allowed_roles=[ProjectMemberRole.ADMIN, ProjectMemberRole.OUTGOING, ProjectMemberRole.LEAD]
+        allowed_roles=[
+            ProjectMemberRole.ADMIN,
+            ProjectMemberRole.PROJECT_OWNER,
+            ProjectMemberRole.OUTGOING,
+            ProjectMemberRole.LEAD,
+        ]
     )(project_id=project_id, current_user=current_user, db=db)
 
-    rag = RAGService(db)
-    detected_raw = await rag.detect_conflicts(project_id=project_id)
-
-    new_conflicts = []
-    for conf in detected_raw:
-        conflict_rec = Conflict(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            conflict_type=conf.get("conflict_type", "architecture"),
-            description=conf.get("description", "Contradiction identified between documents."),
-            source_a={"text": conf.get("source_a_quote", ""), "chunk_id": conf.get("source_a_chunk_id")},
-            source_b={"text": conf.get("source_b_quote", ""), "chunk_id": conf.get("source_b_chunk_id")},
-            status="OPEN",
-        )
-        db.add(conflict_rec)
-        new_conflicts.append(conflict_rec)
-
-    await db.commit()
+    service = ContradictionDetectionService(db)
+    report = await service.detect_project_conflicts(project_id=project_id, handover_id=handoverId)
 
     return ApiResponse(
-        data=[
-            ConflictResponse(
-                id=c.id,
-                project_id=c.project_id,
-                handover_id=c.handover_id,
-                conflict_type=c.conflict_type,
-                description=c.description,
-                source_a=c.source_a,
-                source_b=c.source_b,
-                status=c.status,
-                resolution=c.resolution,
-                resolved_by=c.resolved_by,
-                created_at=c.created_at,
-            )
-            for c in new_conflicts
-        ],
-        message=f"Conflict detection completed. Identified {len(new_conflicts)} contradiction(s).",
+        data=report.conflicts,
+        message=f"Conflict detection completed. Identified {len(report.conflicts)} contradiction(s).",
+    )
+
+
+@project_conflicts_router.post(
+    "/{project_id}/conflicts/report",
+    response_model=ApiResponse[ContradictionDetectionReport],
+    summary="Run Contradiction Detection and Return Detailed Audit Report",
+)
+async def trigger_conflict_detection_report(
+    project_id: uuid.UUID,
+    handoverId: Optional[uuid.UUID] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_project_membership(
+        allowed_roles=[
+            ProjectMemberRole.ADMIN,
+            ProjectMemberRole.PROJECT_OWNER,
+            ProjectMemberRole.OUTGOING,
+            ProjectMemberRole.LEAD,
+        ]
+    )(project_id=project_id, current_user=current_user, db=db)
+
+    service = ContradictionDetectionService(db)
+    report = await service.detect_project_conflicts(project_id=project_id, handover_id=handoverId)
+
+    return ApiResponse(
+        data=report,
+        message=f"Contradiction detection report generated with {report.contradictions_detected} contradiction(s).",
     )
 
 
 # =============================================================================
 # GLOBAL CONFLICT ENDPOINTS (/conflicts/...)
 # =============================================================================
+
+@router.get(
+    "/categories",
+    response_model=ApiResponse[List[str]],
+    summary="List Supported Conflict Categories",
+)
+async def list_conflict_categories():
+    return ApiResponse(
+        data=[c.value for c in ConflictCategory],
+        message="Supported contradiction categories retrieved.",
+    )
+
 
 @router.get(
     "",
@@ -147,6 +173,7 @@ async def trigger_conflict_detection(
 async def list_conflicts_query(
     projectId: Optional[uuid.UUID] = None,
     handoverId: Optional[uuid.UUID] = None,
+    status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -158,27 +185,29 @@ async def list_conflicts_query(
     stmt = select(Conflict).where(Conflict.project_id == projectId)
     if handoverId:
         stmt = stmt.where(Conflict.handover_id == handoverId)
+    if status_filter:
+        norm = normalize_conflict_status(status_filter)
+        stmt = stmt.where(
+            or_(
+                Conflict.status == norm,
+                Conflict.status == status_filter.upper(),
+                Conflict.status == status_filter,
+            )
+        )
 
     stmt = stmt.order_by(Conflict.created_at.desc())
     result = await db.execute(stmt)
-    records = result.scalars().all()
+    if hasattr(result, "scalars"):
+        sc = result.scalars()
+        if hasattr(sc, "__await__"):
+            sc = await sc
+        records = sc.all() if hasattr(sc, "all") else []
+        if hasattr(records, "__await__"):
+            records = await records
+    else:
+        records = []
 
-    items = [
-        ConflictResponse(
-            id=c.id,
-            project_id=c.project_id,
-            handover_id=c.handover_id,
-            conflict_type=c.conflict_type,
-            description=c.description,
-            source_a=c.source_a,
-            source_b=c.source_b,
-            status=c.status,
-            resolution=c.resolution,
-            resolved_by=c.resolved_by,
-            created_at=c.created_at,
-        )
-        for c in records
-    ]
+    items = [ConflictResponse.model_validate(c) for c in records]
 
     return ApiResponse(
         data=items,
@@ -197,28 +226,13 @@ async def get_conflict_by_id(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Conflict).where(Conflict.id == conflict_id)
-    result = await db.execute(stmt)
-    conflict = result.scalars().first()
-    if not conflict:
-        raise NotFoundException("Conflict", conflict_id)
+    service = ContradictionDetectionService(db)
+    conflict = await service.get_conflict(conflict_id)
 
     await require_project_membership()(project_id=conflict.project_id, current_user=current_user, db=db)
 
     return ApiResponse(
-        data=ConflictResponse(
-            id=conflict.id,
-            project_id=conflict.project_id,
-            handover_id=conflict.handover_id,
-            conflict_type=conflict.conflict_type,
-            description=conflict.description,
-            source_a=conflict.source_a,
-            source_b=conflict.source_b,
-            status=conflict.status,
-            resolution=conflict.resolution,
-            resolved_by=conflict.resolved_by,
-            created_at=conflict.created_at,
-        ),
+        data=ConflictResponse.model_validate(conflict),
         message="Conflict details retrieved.",
     )
 
@@ -226,7 +240,7 @@ async def get_conflict_by_id(
 @router.patch(
     "/{conflict_id}",
     response_model=ApiResponse[ConflictResponse],
-    summary="Update Conflict Status or Notes (OPEN, UNDER_REVIEW, etc.)",
+    summary="Update Conflict Status or Notes (Unresolved, Under Review, etc.)",
 )
 async def update_conflict(
     conflict_id: uuid.UUID,
@@ -234,48 +248,35 @@ async def update_conflict(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Conflict).where(Conflict.id == conflict_id)
-    result = await db.execute(stmt)
-    conflict = result.scalars().first()
-    if not conflict:
-        raise NotFoundException("Conflict", conflict_id)
+    service = ContradictionDetectionService(db)
+    conflict = await service.get_conflict(conflict_id)
 
     await require_project_membership(
-        allowed_roles=[ProjectMemberRole.ADMIN, ProjectMemberRole.LEAD, ProjectMemberRole.OUTGOING]
+        allowed_roles=[
+            ProjectMemberRole.ADMIN,
+            ProjectMemberRole.PROJECT_OWNER,
+            ProjectMemberRole.LEAD,
+            ProjectMemberRole.REVIEWER,
+            ProjectMemberRole.OUTGOING,
+        ]
     )(project_id=conflict.project_id, current_user=current_user, db=db)
 
-    if payload.status is not None:
-        valid_statuses = ("OPEN", "UNDER_REVIEW", "RESOLVED", "DISMISSED")
-        normalized_status = payload.status.upper()
-        if normalized_status not in valid_statuses:
-            raise ValidationException(f"Invalid status '{payload.status}'. Must be one of: {valid_statuses}")
-        conflict.status = normalized_status
+    target_status = payload.status or payload.resolution_status
+    if target_status is not None:
+        conflict = await service.update_conflict_status(
+            conflict_id=conflict_id,
+            new_status=target_status,
+            notes=payload.notes,
+            current_user=current_user,
+        )
 
     if payload.description is not None:
         conflict.description = payload.description
-
-    if payload.notes is not None:
-        existing_res = conflict.resolution or {}
-        existing_res["reviewer_notes"] = payload.notes
-        conflict.resolution = existing_res
-
-    await db.commit()
-    await db.refresh(conflict)
+        await db.commit()
+        await db.refresh(conflict)
 
     return ApiResponse(
-        data=ConflictResponse(
-            id=conflict.id,
-            project_id=conflict.project_id,
-            handover_id=conflict.handover_id,
-            conflict_type=conflict.conflict_type,
-            description=conflict.description,
-            source_a=conflict.source_a,
-            source_b=conflict.source_b,
-            status=conflict.status,
-            resolution=conflict.resolution,
-            resolved_by=conflict.resolved_by,
-            created_at=conflict.created_at,
-        ),
+        data=ConflictResponse.model_validate(conflict),
         message=f"Conflict updated to status '{conflict.status}'.",
     )
 
@@ -289,38 +290,52 @@ async def update_conflict(
 async def resolve_conflict_by_id(
     conflict_id: uuid.UUID,
     payload: ConflictResolveRequest,
+    request: Request = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Conflict).where(Conflict.id == conflict_id)
-    result = await db.execute(stmt)
-    conflict = result.scalars().first()
-    if not conflict:
-        raise NotFoundException("Conflict", conflict_id)
+    service = ContradictionDetectionService(db)
+    conflict = await service.get_conflict(conflict_id)
 
-    # Strictly restricted to LEAD or ADMIN roles
+    # Authorized roles: Project Owner, Admin, Lead. Reviewers can resolve ONLY when authorized.
     await require_project_membership(
-        allowed_roles=[ProjectMemberRole.ADMIN, ProjectMemberRole.LEAD]
+        permission=Permission.RESOLVE_CONFLICT
     )(project_id=conflict.project_id, current_user=current_user, db=db)
 
-    resolution_status = "DISMISSED" if payload.status.upper() == "DISMISSED" else "RESOLVED"
-    conflict.status = resolution_status
-    conflict.resolution = {
-        "chosen_source": payload.chosen_source,
-        "chosen_value": payload.chosen_value,
-        "resolution_explanation": payload.resolution_notes,
-        "resolved_by_name": current_user.full_name or current_user.email,
-        "resolved_at": datetime.now(timezone.utc).isoformat(),
-    }
-    conflict.resolved_by = current_user.id
-    await db.commit()
+    conflict = await service.resolve_conflict(
+        conflict_id=conflict_id,
+        payload=payload,
+        current_user=current_user,
+    )
+
+    # Record conflict resolved audit event
+    audit_svc = AuditService(db)
+    await audit_svc.record_event(
+        action=AuditActionType.CONFLICT_RESOLVED,
+        entity_type=AuditEntityType.CONFLICT,
+        entity_id=conflict.id,
+        user_id=current_user.id,
+        project_id=conflict.project_id,
+        change_metadata={
+            "conflict_id": str(conflict.id),
+            "status": conflict.status,
+            "resolution_status": conflict.resolution_status,
+            "chosen_source": payload.chosen_source,
+            "category": getattr(conflict, "category", getattr(conflict, "conflict_category", getattr(conflict, "conflict_type", "general"))),
+            "severity": getattr(conflict, "severity", "medium"),
+            "notes": payload.resolution_notes or payload.explanation,
+        },
+        request=request,
+    )
 
     return ApiResponse(
         data={
             "conflictId": str(conflict.id),
             "status": conflict.status,
+            "resolution_status": conflict.resolution_status,
             "resolvedBy": str(current_user.id),
-            "explanation": payload.resolution_notes,
+            "explanation": payload.resolution_notes or payload.explanation,
+            "authoritativeValue": payload.authoritative_value or payload.chosen_value,
         },
         message=f"Conflict marked as {conflict.status} with human arbitration recorded.",
     )
@@ -347,9 +362,11 @@ async def resolve_conflict_legacy(
 ):
     resolve_req = ConflictResolveRequest(
         chosen_source=payload.resolutionType,
+        authoritative_value=payload.chosenValue or payload.correctionText,
         chosen_value=payload.chosenValue or payload.correctionText,
         resolution_notes=payload.resolutionNote,
-        status="DISMISSED" if payload.resolutionType == "dismissed" else "RESOLVED",
+        explanation=payload.resolutionNote,
+        status="Dismissed" if str(payload.resolutionType).lower() == "dismissed" else "Resolved",
     )
     return await resolve_conflict_by_id(
         conflict_id=payload.conflictId,

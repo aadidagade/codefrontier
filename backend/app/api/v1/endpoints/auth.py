@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user
 from app.core.rate_limit import rate_limit
+from app.core.security import hash_token
 from app.models.user import User
 from app.services.auth_service import AuthService
+from app.services.audit_service import AuditService
+from app.models.audit_log import AuditActionType, AuditEntityType
 from app.schemas.common import ApiResponse
 from app.schemas.auth import (
     RegisterRequest,
@@ -47,10 +50,27 @@ async def register(
 )
 async def login(
     credentials: LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     auth_service = AuthService(db)
     result = await auth_service.login(credentials)
+
+    # Record user login audit event
+    audit_svc = AuditService(db)
+    await audit_svc.record_event(
+        action=AuditActionType.USER_LOGIN,
+        entity_type=AuditEntityType.USER,
+        entity_id=result.user.id,
+        user_id=result.user.id,
+        change_metadata={
+            "email": credentials.email,
+            "status": "success",
+            "auth_method": "password",
+        },
+        request=request,
+    )
+
     return ApiResponse(
         data=result,
         message="Authentication successful.",
@@ -84,10 +104,30 @@ async def refresh_token(
 )
 async def logout(
     req: LogoutRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     auth_service = AuthService(db)
+    user_id = None
+    if req.refresh_token:
+        token_hash = hash_token(req.refresh_token)
+        token_record = await auth_service.user_repo.get_valid_refresh_token(token_hash)
+        if token_record:
+            user_id = token_record.user_id
+
     await auth_service.logout(req.refresh_token)
+
+    # Record user logout audit event
+    audit_svc = AuditService(db)
+    await audit_svc.record_event(
+        action=AuditActionType.USER_LOGOUT,
+        entity_type=AuditEntityType.USER,
+        entity_id=user_id,
+        user_id=user_id,
+        change_metadata={"status": "logged_out"},
+        request=request,
+    )
+
     return ApiResponse(
         data=True,
         message="Session revoked and logged out successfully.",

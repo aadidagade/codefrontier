@@ -46,9 +46,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         process_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
-        # 3. Attach Request-ID and Timing Headers to Response
+        # 3. Attach Request-ID, Timing, and OWASP Defense Headers to Response
         response.headers["x-request-id"] = request_id
         response.headers["x-process-time-ms"] = str(process_time_ms)
+        response.headers["x-content-type-options"] = "nosniff"
+        response.headers["x-frame-options"] = "DENY"
+        response.headers["x-xss-protection"] = "1; mode=block"
+        response.headers["referrer-policy"] = "strict-origin-when-cross-origin"
 
         # 4. Safe Logging (Exclude passwords and sensitive tokens)
         client_ip = request.client.host if request.client else "unknown"

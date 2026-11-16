@@ -28,6 +28,8 @@ import {
   ConflictResolutionType,
 } from '../../types/verification';
 import { HandoverReviewRecord } from '../../types/review';
+import { ContradictionDashboard } from '../../components/verification/ContradictionDashboard';
+import { EvidenceVerificationDashboard } from '../../components/verification/EvidenceVerificationDashboard';
 import { ConflictsSection } from '../../components/verification/ConflictsSection';
 import { ClaimsAuditSection } from '../../components/verification/ClaimsAuditSection';
 import { ReviewDashboardView } from '../../components/review/ReviewDashboardView';
@@ -238,29 +240,12 @@ export const ReviewQueuePage: React.FC = () => {
 
       {/* TAB 2: CONFLICTS & DISCREPANCIES */}
       {currentTab === 'conflicts' && (
-        <ConflictsSection
-          conflicts={conflicts}
-          onOpenResolve={handleOpenResolveConflict}
-          onReopen={handleReopenConflict}
-          onViewEvidenceForConflict={(conflict) => {
-            const related = claims.find((c) => c.conflictId === conflict.id);
-            if (related) {
-              handleOpenEvidenceDrawer(related);
-            } else {
-              info('Viewing Conflict', `Reviewing evidence for: ${conflict.topic}`);
-            }
-          }}
-        />
+        <ContradictionDashboard />
       )}
 
       {/* TAB 3: CLAIM EVIDENCE AUDIT */}
       {currentTab === 'claims' && (
-        <ClaimsAuditSection
-          claims={claims}
-          onSelectClaim={handleOpenEvidenceDrawer}
-          onVerifyClaim={(claim) => setClaimToVerifyModal({ claim, mode: 'verify' })}
-          onFlagClaim={(claim) => setClaimToVerifyModal({ claim, mode: 'flag' })}
-        />
+        <EvidenceVerificationDashboard />
       )}
 
       {/* REUSABLE RIGHT-SIDE EVIDENCE DRAWER */}

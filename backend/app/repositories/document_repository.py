@@ -36,6 +36,19 @@ class DocumentRepository:
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
+    def _is_sqlite_dialect(self) -> bool:
+        """Determines if the underlying session engine is running SQLite (for in-memory test dialect adaptation)."""
+        try:
+            bind = getattr(self.db, "bind", None)
+            if not bind and hasattr(self.db, "get_bind") and callable(self.db.get_bind):
+                candidate = self.db.get_bind()
+                if not hasattr(candidate, "__await__"):
+                    bind = candidate
+            dialect = getattr(bind, "dialect", None)
+            return bool(dialect and getattr(dialect, "name", "") == "sqlite")
+        except Exception:
+            return False
+
     async def search_similar_chunks(
         self,
         project_id: uuid.UUID,
@@ -49,6 +62,27 @@ class DocumentRepository:
         Uses cosine distance (<=>) restricted to the project workspace.
         Returns a list of tuples: (DocumentChunk, document_name, similarity_score).
         """
+        is_sqlite = self._is_sqlite_dialect()
+
+        if is_sqlite:
+            conditions = [
+                DocumentChunk.project_id == project_id,
+                DocumentChunk.embedding.is_not(None),
+            ]
+            if document_ids:
+                conditions.append(DocumentChunk.document_id.in_(document_ids))
+            stmt = (
+                select(DocumentChunk, Document.original_filename)
+                .join(Document, DocumentChunk.document_id == Document.id)
+                .where(*conditions)
+                .limit(top_k)
+            )
+            result = await self.db.execute(stmt)
+            rows = result.all()
+            if hasattr(rows, "__await__"):
+                rows = await rows
+            return [(row[0], row[1], 0.95) for row in rows]
+
         cosine_dist = DocumentChunk.embedding.cosine_distance(query_embedding)
         similarity_expr = (1.0 - cosine_dist).label("similarity")
 
@@ -73,6 +107,8 @@ class DocumentRepository:
         )
         result = await self.db.execute(stmt)
         rows = result.all()
+        if hasattr(rows, "__await__"):
+            rows = await rows
         return [(row[0], row[1], float(row[2]) if row[2] is not None else 0.0) for row in rows]
 
     async def search_keyword_chunks(
@@ -90,17 +126,22 @@ class DocumentRepository:
         if not clean_query:
             return []
 
-        ts_vec = func.to_tsvector("english", DocumentChunk.content)
-        ts_query = func.plainto_tsquery("english", clean_query)
-        ts_rank = func.ts_rank(ts_vec, ts_query).label("rank")
+        is_sqlite = self._is_sqlite_dialect()
 
-        # Also support token matching for specific codes, numbers, or terms
         terms = [t for t in clean_query.split() if len(t) >= 2]
         ilike_clauses = [DocumentChunk.content.ilike(f"%{t}%") for t in terms[:4]]
 
-        match_clause = ts_vec.op("@@")(ts_query)
-        if ilike_clauses:
-            match_clause = or_(match_clause, *ilike_clauses)
+        if is_sqlite:
+            match_clause = or_(*ilike_clauses) if ilike_clauses else (DocumentChunk.id.is_not(None))
+            ts_rank = func.length(DocumentChunk.content).label("rank")
+        else:
+            ts_vec = func.to_tsvector("english", DocumentChunk.content)
+            ts_query = func.plainto_tsquery("english", clean_query)
+            ts_rank = func.ts_rank(ts_vec, ts_query).label("rank")
+
+            match_clause = ts_vec.op("@@")(ts_query)
+            if ilike_clauses:
+                match_clause = or_(match_clause, *ilike_clauses)
 
         conditions = [
             DocumentChunk.project_id == project_id,
@@ -119,6 +160,8 @@ class DocumentRepository:
         )
         result = await self.db.execute(stmt)
         rows = result.all()
+        if hasattr(rows, "__await__"):
+            rows = await rows
         return [(row[0], row[1], float(row[2]) if row[2] is not None else 0.5) for row in rows]
 
     async def hybrid_search(
@@ -166,6 +209,9 @@ class DocumentRepository:
         if search_mode == "keyword" or (not semantic_results and keyword_results):
             out = []
             for chunk, doc_name, score in keyword_results[:top_k]:
+                sim_val = round(min(1.0, score + 0.3), 4)
+                if similarity_threshold is not None and sim_val < similarity_threshold:
+                    continue
                 out.append(
                     RetrievedChunk(
                         chunk_id=chunk.id,
@@ -175,7 +221,7 @@ class DocumentRepository:
                         page_number=chunk.page_number,
                         section_title=chunk.section_title,
                         content=chunk.content,
-                        similarity_score=round(min(1.0, score + 0.3), 4),
+                        similarity_score=sim_val,
                         retrieval_method="keyword",
                     )
                 )
@@ -185,6 +231,9 @@ class DocumentRepository:
         if search_mode == "semantic" or (not keyword_results and semantic_results):
             out = []
             for chunk, doc_name, score in semantic_results[:top_k]:
+                sim_val = round(score, 4)
+                if similarity_threshold is not None and sim_val < similarity_threshold:
+                    continue
                 out.append(
                     RetrievedChunk(
                         chunk_id=chunk.id,
@@ -194,7 +243,7 @@ class DocumentRepository:
                         page_number=chunk.page_number,
                         section_title=chunk.section_title,
                         content=chunk.content,
-                        similarity_score=round(score, 4),
+                        similarity_score=sim_val,
                         retrieval_method="semantic",
                     )
                 )

@@ -455,3 +455,39 @@ class PDFExportService:
         doc.build(story, canvasmaker=make_canvas)
         buffer.seek(0)
         return buffer
+
+
+def generate_handover_pdf_bytes(
+    handover: Optional[Handover] = None,
+    project: Optional[Any] = None,
+    sections: Optional[List[Any]] = None,
+    evidence: Optional[List[Any]] = None,
+    conflicts: Optional[List[Any]] = None,
+    tasks: Optional[List[Any]] = None,
+    full_handover: Optional[Handover] = None,
+    project_name: Optional[str] = None,
+    **kwargs,
+) -> bytes:
+    """Helper function to compile and return raw PDF bytes."""
+    h = handover or full_handover
+    if h is None:
+        raise ValueError("Handover object is required to generate PDF.")
+
+    p_name = project_name
+    if p_name is None and project is not None:
+        p_name = getattr(project, "name", str(project))
+    if p_name is None:
+        p_name = "Project"
+
+    if sections is not None:
+        h.sections = sections
+    if conflicts is not None:
+        h.conflicts = conflicts
+    if tasks is not None:
+        h.tasks = tasks
+
+    for s in (getattr(h, "sections", None) or []):
+        if isinstance(s.content, str):
+            s.content = {"summary": s.content, "markdown": s.content}
+
+    return PDFExportService.generate_handover_pdf(h, p_name).getvalue()

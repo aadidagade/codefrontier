@@ -103,7 +103,7 @@ export const RegisterPage: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-3.5">
+        <form noValidate onSubmit={handleSubmit} className="space-y-3.5">
           <Input
             label="Full Name"
             type="text"

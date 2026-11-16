@@ -215,7 +215,7 @@ async def test_missing_section_automatically_marked_unknown():
     def capture_add(item):
         if isinstance(item, HandoverSection):
             added_sections.append(item)
-    mock_db.add.side_effect = capture_add
+    mock_db.add = MagicMock(side_effect=capture_add)
 
     with patch.object(service, "_retrieve_category_targeted_evidence", return_value=("Corpus", {str(chunk_id): (chunk, doc)})), \
          patch("app.services.rag_service.gemini_service.generate_content", return_value=json.dumps(partial_output)):
@@ -252,6 +252,7 @@ async def test_regenerate_single_section():
     )
 
     mock_db.execute.return_value.first.return_value = (mock_section, mock_handover)
+    mock_db.execute.return_value.scalar_one_or_none.return_value = mock_section
     mock_db.execute.return_value.scalars.return_value.first.return_value = mock_section
 
     mock_regen_output = {

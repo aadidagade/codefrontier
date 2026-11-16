@@ -18,8 +18,8 @@ class TaskResponse(BaseModel):
     priority: str = "medium"
     status: str = "pending"
     due_date: Optional[datetime] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     dependencies_count: int = 0
     dependents_count: int = 0
     is_blocked: bool = False
@@ -79,3 +79,29 @@ class TaskDependencyListResponse(BaseModel):
 class ProgressNoteCreate(BaseModel):
     """Payload to append a timestamped progress note to a task."""
     text: str = Field(..., min_length=1, description="Progress note text")
+
+
+class TaskProgressUpdateCreate(BaseModel):
+    """Payload for incoming member or assignee to record a structured progress update."""
+    update_text: str = Field(..., min_length=1, description="Detailed progress update or milestone notes")
+    new_status: Optional[str] = Field(None, pattern="^(pending|in_progress|completed|blocked|cancelled)$", description="Optional new status transition")
+
+
+class TaskProgressUpdateResponse(BaseModel):
+    """Structured progress update item."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    user_id: uuid.UUID
+    user_name: Optional[str] = None
+    update_text: str
+    status_before: Optional[str] = None
+    status_after: Optional[str] = None
+    created_at: datetime
+
+
+class TaskStatusUpdate(BaseModel):
+    """Payload to update continuation task status."""
+    status: str = Field(..., pattern="^(pending|in_progress|completed|blocked|cancelled)$", description="New status")
+    notes: Optional[str] = Field(None, description="Optional transition note or rationale")

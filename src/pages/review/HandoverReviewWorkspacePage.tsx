@@ -49,6 +49,7 @@ import { ApprovalConfirmationModal } from '../../components/review/ApprovalConfi
 import { RequestChangesModal } from '../../components/review/RequestChangesModal';
 import { SectionContentEditorModal } from '../../components/review/SectionContentEditorModal';
 import { EvidenceDrawer } from '../../components/verification/EvidenceDrawer';
+import { VersionHistorySection } from '../../components/handover/VersionHistorySection';
 
 export const HandoverReviewWorkspacePage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -76,6 +77,7 @@ export const HandoverReviewWorkspacePage: React.FC = () => {
 
   // Show checklist toggle
   const [showChecklist, setShowChecklist] = useState(false);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
 
   // Load handover
   const loadHandover = async () => {
@@ -278,6 +280,20 @@ export const HandoverReviewWorkspacePage: React.FC = () => {
 
         {/* Global Review Actions Bar */}
         <div className="flex flex-wrap items-center gap-2.5">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowVersionHistory(!showVersionHistory)}
+            leftIcon={<GitBranch className="h-4 w-4 text-brand-400" />}
+            className={`text-xs font-semibold ${
+              showVersionHistory
+                ? 'bg-brand-500/20 border-brand-500/60 text-brand-300'
+                : 'border-slate-700 text-slate-300'
+            }`}
+          >
+            Version History
+          </Button>
+
           {handover.isLocked ? (
             <>
               <Badge variant="success" size="md" dot>
@@ -378,6 +394,35 @@ export const HandoverReviewWorkspacePage: React.FC = () => {
             </Button>
           </div>
         </div>
+      )}
+
+      {/* Version History & Snapshots Panel */}
+      {showVersionHistory && (
+        <Card className="bg-[#0B101D] border border-brand-500/40 p-5 shadow-2xl space-y-4 rounded-2xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <div className="h-7 w-7 rounded-lg bg-brand-500/10 border border-brand-500/20 text-brand-400 flex items-center justify-center">
+                <GitBranch className="h-4 w-4" />
+              </div>
+              <h3 className="text-sm font-bold text-white">Handover Version Management & Snapshots</h3>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowVersionHistory(false)}
+              className="text-xs text-slate-400 hover:text-white"
+            >
+              Close History &times;
+            </Button>
+          </div>
+          <VersionHistorySection
+            handoverId={handover.id}
+            currentVersionNumber={handover.version}
+            onVersionRestored={() => {
+              loadHandover();
+            }}
+          />
+        </Card>
       )}
 
       {/* Main Two-Column Layout */}

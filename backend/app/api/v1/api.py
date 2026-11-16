@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     tasks,
     notifications,
     exports,
+    audit,
 )
 
 api_router = APIRouter()
@@ -43,3 +44,7 @@ api_router.include_router(tasks.project_tasks_router, prefix="/projects", tags=[
 api_router.include_router(tasks.router, prefix="/tasks", tags=["Continuation Tasks"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 api_router.include_router(exports.router, prefix="/exports", tags=["Exports"])
+
+# Audit Trail & Compliance
+api_router.include_router(audit.project_audit_router, prefix="/projects", tags=["Audit Trail"])
+api_router.include_router(audit.router, prefix="/audit-logs", tags=["Audit Trail"])

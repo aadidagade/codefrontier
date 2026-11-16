@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import DateTime, Enum, ForeignKey, JSON, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.models.base import UUIDMixin, TimestampMixin, utc_now
@@ -14,13 +14,16 @@ if TYPE_CHECKING:
     from app.models.conflict import Conflict
     from app.models.task import Task
     from app.models.notification import Notification
+    from app.models.audit_log import AuditLog
 
 
 class ProjectMemberRole(str, enum.Enum):
     """Authorized roles for project members."""
     ADMIN = "ADMIN"
+    PROJECT_OWNER = "PROJECT_OWNER"
     OUTGOING = "OUTGOING"
     INCOMING = "INCOMING"
+    REVIEWER = "REVIEWER"
     LEAD = "LEAD"
 
 
@@ -82,6 +85,11 @@ class Project(Base, UUIDMixin, TimestampMixin):
         back_populates="project",
         cascade="all, delete-orphan",
     )
+    audit_logs: Mapped[List["AuditLog"]] = relationship(
+        "AuditLog",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
 
 
 class ProjectMember(Base, UUIDMixin):
@@ -110,6 +118,31 @@ class ProjectMember(Base, UUIDMixin):
         default=ProjectMemberRole.INCOMING.value,
         nullable=False,
     )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        default="active",
+        nullable=False,
+        index=True,
+    )
+    invitation_status: Mapped[str] = mapped_column(
+        String(50),
+        default="accepted",
+        nullable=False,
+    )
+    invited_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    invited_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    custom_permissions: Mapped[Optional[List[str]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+    )
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -118,4 +151,4 @@ class ProjectMember(Base, UUIDMixin):
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="members")
-    user: Mapped["User"] = relationship("User", back_populates="project_memberships")
+    user: Mapped["User"] = relationship("User", back_populates="project_memberships", foreign_keys=[user_id])

@@ -279,7 +279,7 @@ export const DocumentsPage: React.FC = () => {
         </div>
 
         {/* Header Metric Badges */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
           <div className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs flex items-center gap-2">
             <span className="text-slate-400">Total:</span>
             <span className="font-mono font-bold text-white">{documents.length}</span>

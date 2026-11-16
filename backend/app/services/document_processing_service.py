@@ -59,6 +59,11 @@ class DocumentProcessingService:
 
         # Write file stream to disk while enforcing max upload size
         total_size = len(header_chunk)
+        if total_size > settings.max_upload_size_bytes:
+            raise ValidationException(
+                message=f"File exceeds maximum allowed size of {settings.MAX_UPLOAD_SIZE_MB}MB.",
+                details={"file_size": total_size, "limit_bytes": settings.max_upload_size_bytes},
+            )
         with open(target_path, "wb") as f:
             f.write(header_chunk)
             while True:

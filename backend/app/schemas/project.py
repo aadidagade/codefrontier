@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from typing import List, Optional, Union
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.models.project import ProjectMemberRole
+from app.core.permissions import normalize_role
 
 
 class ProjectCreate(BaseModel):
@@ -39,12 +40,38 @@ class MemberAdd(BaseModel):
     """Payload to add/invite an existing registered user to a project."""
     email: Optional[EmailStr] = Field(None, description="Registered user email to invite")
     user_id: Optional[uuid.UUID] = Field(None, description="Registered user UUID")
-    role: ProjectMemberRole = Field(default=ProjectMemberRole.INCOMING, description="Assigned role: ADMIN, OUTGOING, INCOMING, LEAD")
+    role: Union[ProjectMemberRole, str] = Field(
+        default=ProjectMemberRole.INCOMING,
+        description="Assigned role: ADMIN, PROJECT_OWNER, OUTGOING, INCOMING, REVIEWER, LEAD",
+    )
+    status: Optional[str] = Field("active", description="Initial membership status: active or invited")
+    custom_permissions: Optional[List[str]] = Field(None, description="Optional custom permission overrides")
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def validate_role(cls, v):
+        if isinstance(v, (str, ProjectMemberRole)):
+            normalized = normalize_role(v)
+            return ProjectMemberRole(normalized.value)
+        return v
 
 
 class MemberUpdateRole(BaseModel):
     """Payload to change a member's role."""
-    role: ProjectMemberRole = Field(..., description="New role: ADMIN, OUTGOING, INCOMING, LEAD")
+    role: Union[ProjectMemberRole, str] = Field(
+        ...,
+        description="New role: ADMIN, PROJECT_OWNER, OUTGOING, INCOMING, REVIEWER, LEAD",
+    )
+    status: Optional[str] = Field(None, description="Optional membership status update: active, invited, revoked")
+    custom_permissions: Optional[List[str]] = Field(None, description="Optional custom permission overrides")
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def validate_role(cls, v):
+        if isinstance(v, (str, ProjectMemberRole)):
+            normalized = normalize_role(v)
+            return ProjectMemberRole(normalized.value)
+        return v
 
 
 class ProjectMemberResponse(BaseModel):
@@ -58,7 +85,24 @@ class ProjectMemberResponse(BaseModel):
     email: str
     profile_image: Optional[str] = None
     role: str
+    role_display_name: str = "Member"
+    status: str = "active"
+    invitation_status: str = "accepted"
+    invited_by: Optional[uuid.UUID] = None
+    invited_at: Optional[datetime] = None
     joined_at: datetime
+    custom_permissions: Optional[List[str]] = None
+
+
+class MemberRevokeResponse(BaseModel):
+    """Response returned upon revoking member access."""
+    member_id: uuid.UUID
+    project_id: uuid.UUID
+    user_id: uuid.UUID
+    status: str = "revoked"
+    invitation_status: str = "revoked"
+    revoked_at: datetime
+    message: str = "Project workspace access revoked."
 
 
 class ProjectOverviewResponse(BaseModel):

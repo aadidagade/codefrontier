@@ -44,6 +44,9 @@ class UnauthorizedException(AppException):
         )
 
 
+AuthenticationException = UnauthorizedException
+
+
 class ForbiddenException(AppException):
     def __init__(self, message: str = "You do not have permission to access this project resource."):
         super().__init__(
@@ -81,6 +84,9 @@ class ValidationException(AppException):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             details=details,
         )
+
+
+BadRequestException = ValidationException
 
 
 class DatabaseException(AppException):
